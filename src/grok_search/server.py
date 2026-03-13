@@ -141,7 +141,7 @@ async def web_search(
         "Optional model ID for this request only. This value is used ONLY when user explicitly provided."] = "",
     extra_sources: Annotated[
         int,
-        "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 0."] = 0,
+        "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 3."] = 3,
 ) -> dict:
     session_id = new_session_id()
     try:
