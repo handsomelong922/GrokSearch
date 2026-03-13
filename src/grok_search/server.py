@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -55,7 +56,8 @@ async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
     return models
 
 
-async def _get_available_models_cached(api_url: str, api_key: str) -> list[str]:
+async def _get_available_models_cached(api_url: str,
+                                       api_key: str) -> list[str]:
     key = (api_url, api_key)
     async with _AVAILABLE_MODELS_LOCK:
         if key in _AVAILABLE_MODELS_CACHE:
@@ -123,13 +125,23 @@ def _extra_results_to_sources(
     - content: string (answer only)
     - sources_count: int
     """,
-    meta={"version": "2.0.0", "author": "guda.studio"},
+    meta={
+        "version": "2.0.0",
+        "author": "guda.studio"
+    },
 )
 async def web_search(
-    query: Annotated[str, "Clear, self-contained natural-language search query."],
-    platform: Annotated[str, "Target platform to focus on (e.g., 'Twitter', 'GitHub', 'Reddit'). Leave empty for general web search."] = "",
-    model: Annotated[str, "Optional model ID for this request only. This value is used ONLY when user explicitly provided."] = "",
-    extra_sources: Annotated[int, "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 0."] = 0,
+    query: Annotated[str,
+                     "Clear, self-contained natural-language search query."],
+    platform: Annotated[
+        str,
+        "Target platform to focus on (e.g., 'Twitter', 'GitHub', 'Reddit'). Leave empty for general web search."] = "",
+    model: Annotated[
+        str,
+        "Optional model ID for this request only. This value is used ONLY when user explicitly provided."] = "",
+    extra_sources: Annotated[
+        int,
+        "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 0."] = 0,
 ) -> dict:
     session_id = new_session_id()
     try:
@@ -137,14 +149,22 @@ async def web_search(
         api_key = config.grok_api_key
     except ValueError as e:
         await _SOURCES_CACHE.set(session_id, [])
-        return {"session_id": session_id, "content": f"配置错误: {str(e)}", "sources_count": 0}
+        return {
+            "session_id": session_id,
+            "content": f"配置错误: {str(e)}",
+            "sources_count": 0
+        }
 
     effective_model = config.grok_model
     if model:
         available = await _get_available_models_cached(api_url, api_key)
         if available and model not in available:
             await _SOURCES_CACHE.set(session_id, [])
-            return {"session_id": session_id, "content": f"无效模型: {model}", "sources_count": 0}
+            return {
+                "session_id": session_id,
+                "content": f"无效模型: {model}",
+                "sources_count": 0
+            }
         effective_model = model
 
     grok_provider = GrokSearchProvider(api_url, api_key, effective_model)
@@ -207,7 +227,11 @@ async def web_search(
     all_sources = merge_sources(grok_sources, extra)
 
     await _SOURCES_CACHE.set(session_id, all_sources)
-    return {"session_id": session_id, "content": answer, "sources_count": len(all_sources)}
+    return {
+        "session_id": session_id,
+        "content": answer,
+        "sources_count": len(all_sources)
+    }
 
 
 @mcp.tool(
@@ -217,7 +241,10 @@ async def web_search(
     Retrieve all cached sources for a previous web_search call.
     Provide the session_id returned by web_search to get the full source list.
     """,
-    meta={"version": "1.0.0", "author": "guda.studio"},
+    meta={
+        "version": "1.0.0",
+        "author": "guda.studio"
+    },
 )
 async def get_sources(
     session_id: Annotated[str, "Session ID from previous web_search call."]
@@ -230,7 +257,11 @@ async def get_sources(
             "sources_count": 0,
             "error": "session_id_not_found_or_expired",
         }
-    return {"session_id": session_id, "sources": sources, "sources_count": len(sources)}
+    return {
+        "session_id": session_id,
+        "sources": sources,
+        "sources_count": len(sources)
+    }
 
 
 async def _call_tavily_extract(url: str) -> str | None:
@@ -240,7 +271,10 @@ async def _call_tavily_extract(url: str) -> str | None:
     if not api_key:
         return None
     endpoint = f"{api_url.rstrip('/')}/extract"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     body = {"urls": [url], "format": "markdown"}
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -255,13 +289,17 @@ async def _call_tavily_extract(url: str) -> str | None:
         return None
 
 
-async def _call_tavily_search(query: str, max_results: int = 6) -> list[dict] | None:
+async def _call_tavily_search(query: str,
+                              max_results: int = 6) -> list[dict] | None:
     import httpx
     api_key = config.tavily_api_key
     if not api_key:
         return None
     endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     body = {
         "query": query,
         "max_results": max_results,
@@ -275,21 +313,27 @@ async def _call_tavily_search(query: str, max_results: int = 6) -> list[dict] | 
             response.raise_for_status()
             data = response.json()
             results = data.get("results", [])
-            return [
-                {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", ""), "score": r.get("score", 0)}
-                for r in results
-            ] if results else None
+            return [{
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+                "score": r.get("score", 0)
+            } for r in results] if results else None
     except Exception:
         return None
 
 
-async def _call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | None:
+async def _call_firecrawl_search(query: str,
+                                 limit: int = 14) -> list[dict] | None:
     import httpx
     api_key = config.firecrawl_api_key
     if not api_key:
         return None
     endpoint = f"{config.firecrawl_api_url.rstrip('/')}/search"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     body = {"query": query, "limit": limit}
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
@@ -297,10 +341,11 @@ async def _call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | No
             response.raise_for_status()
             data = response.json()
             results = data.get("data", {}).get("web", [])
-            return [
-                {"title": r.get("title", ""), "url": r.get("url", ""), "description": r.get("description", "")}
-                for r in results
-            ] if results else None
+            return [{
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "description": r.get("description", "")
+            } for r in results] if results else None
     except Exception:
         return None
 
@@ -312,7 +357,10 @@ async def _call_firecrawl_scrape(url: str, ctx=None) -> str | None:
     if not api_key:
         return None
     endpoint = f"{api_url.rstrip('/')}/scrape"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     max_retries = config.retry_max_attempts
     for attempt in range(max_retries):
         body = {
@@ -323,13 +371,18 @@ async def _call_firecrawl_scrape(url: str, ctx=None) -> str | None:
         }
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(endpoint, headers=headers, json=body)
+                response = await client.post(endpoint,
+                                             headers=headers,
+                                             json=body)
                 response.raise_for_status()
                 data = response.json()
                 markdown = data.get("data", {}).get("markdown", "")
                 if markdown and markdown.strip():
                     return markdown
-                await log_info(ctx, f"Firecrawl: markdown为空, 重试 {attempt + 1}/{max_retries}", config.debug_enabled)
+                await log_info(
+                    ctx,
+                    f"Firecrawl: markdown为空, 重试 {attempt + 1}/{max_retries}",
+                    config.debug_enabled)
         except Exception as e:
             await log_info(ctx, f"Firecrawl error: {e}", config.debug_enabled)
             return None
@@ -352,12 +405,15 @@ async def _call_firecrawl_scrape(url: str, ctx=None) -> str | None:
         - May not capture dynamically loaded content requiring JavaScript execution.
         - Large pages may take longer to process; consider timeout implications.
     """,
-    meta={"version": "1.3.0", "author": "guda.studio"},
+    meta={
+        "version": "1.3.0",
+        "author": "guda.studio"
+    },
 )
-async def web_fetch(
-    url: Annotated[str, "Valid HTTP/HTTPS web address pointing to the target page. Must be complete and accessible."],
-    ctx: Context = None
-) -> str:
+async def web_fetch(url: Annotated[
+    str,
+    "Valid HTTP/HTTPS web address pointing to the target page. Must be complete and accessible."],
+                    ctx: Context = None) -> str:
     await log_info(ctx, f"Begin Fetch: {url}", config.debug_enabled)
 
     result = await _call_tavily_extract(url)
@@ -365,10 +421,12 @@ async def web_fetch(
         await log_info(ctx, "Fetch Finished (Tavily)!", config.debug_enabled)
         return result
 
-    await log_info(ctx, "Tavily unavailable or failed, trying Firecrawl...", config.debug_enabled)
+    await log_info(ctx, "Tavily unavailable or failed, trying Firecrawl...",
+                   config.debug_enabled)
     result = await _call_firecrawl_scrape(url, ctx)
     if result:
-        await log_info(ctx, "Fetch Finished (Firecrawl)!", config.debug_enabled)
+        await log_info(ctx, "Fetch Finished (Firecrawl)!",
+                       config.debug_enabled)
         return result
 
     await log_info(ctx, "Fetch Failed!", config.debug_enabled)
@@ -377,8 +435,12 @@ async def web_fetch(
     return "提取失败: 所有提取服务均未能获取内容"
 
 
-async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 1,
-                           max_breadth: int = 20, limit: int = 50, timeout: int = 150) -> str:
+async def _call_tavily_map(url: str,
+                           instructions: str = None,
+                           max_depth: int = 1,
+                           max_breadth: int = 20,
+                           limit: int = 50,
+                           timeout: int = 150) -> str:
     import httpx
     import json
     api_url = config.tavily_api_url
@@ -386,8 +448,17 @@ async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 
     if not api_key:
         return "配置错误: TAVILY_API_KEY 未配置，请设置环境变量 TAVILY_API_KEY"
     endpoint = f"{api_url.rstrip('/')}/map"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    body = {"url": url, "max_depth": max_depth, "max_breadth": max_breadth, "limit": limit, "timeout": timeout}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "url": url,
+        "max_depth": max_depth,
+        "max_breadth": max_breadth,
+        "limit": limit,
+        "timeout": timeout
+    }
     if instructions:
         body["instructions"] = instructions
     try:
@@ -395,11 +466,14 @@ async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 
             response = await client.post(endpoint, headers=headers, json=body)
             response.raise_for_status()
             data = response.json()
-            return json.dumps({
-                "base_url": data.get("base_url", ""),
-                "results": data.get("results", []),
-                "response_time": data.get("response_time", 0)
-            }, ensure_ascii=False, indent=2)
+            return json.dumps(
+                {
+                    "base_url": data.get("base_url", ""),
+                    "results": data.get("results", []),
+                    "response_time": data.get("response_time", 0)
+                },
+                ensure_ascii=False,
+                indent=2)
     except httpx.TimeoutException:
         return f"映射超时: 请求超过{timeout}秒"
     except httpx.HTTPStatusError as e:
@@ -423,17 +497,41 @@ async def _call_tavily_map(url: str, instructions: str = None, max_depth: int = 
         - Use instructions to filter for specific content (e.g., "only documentation pages").
         - Large sites may hit timeout limits; adjust timeout and limit parameters accordingly.
     """,
-    meta={"version": "1.3.0", "author": "guda.studio"},
+    meta={
+        "version": "1.3.0",
+        "author": "guda.studio"
+    },
 )
 async def web_map(
-    url: Annotated[str, "Root URL to begin the mapping (e.g., 'https://docs.example.com')."],
-    instructions: Annotated[str, "Natural language instructions for the crawler to filter or focus on specific content."] = "",
-    max_depth: Annotated[int, Field(description="Maximum depth of mapping from the base URL.", ge=1, le=5)] = 1,
-    max_breadth: Annotated[int, Field(description="Maximum number of links to follow per page.", ge=1, le=500)] = 20,
-    limit: Annotated[int, Field(description="Total number of links to process before stopping.", ge=1, le=500)] = 50,
-    timeout: Annotated[int, Field(description="Maximum time in seconds for the operation.", ge=10, le=150)] = 150
+    url: Annotated[
+        str,
+        "Root URL to begin the mapping (e.g., 'https://docs.example.com')."],
+    instructions: Annotated[
+        str,
+        "Natural language instructions for the crawler to filter or focus on specific content."] = "",
+    max_depth: Annotated[
+        int,
+        Field(description="Maximum depth of mapping from the base URL.",
+              ge=1,
+              le=5)] = 1,
+    max_breadth: Annotated[
+        int,
+        Field(description="Maximum number of links to follow per page.",
+              ge=1,
+              le=500)] = 20,
+    limit: Annotated[
+        int,
+        Field(description="Total number of links to process before stopping.",
+              ge=1,
+              le=500)] = 50,
+    timeout: Annotated[
+        int,
+        Field(description="Maximum time in seconds for the operation.",
+              ge=10,
+              le=150)] = 150
 ) -> str:
-    result = await _call_tavily_map(url, instructions, max_depth, max_breadth, limit, timeout)
+    result = await _call_tavily_map(url, instructions, max_depth, max_breadth,
+                                    limit, timeout)
     return result
 
 
@@ -453,7 +551,10 @@ async def web_map(
         - API keys are automatically masked for security in the response.
         - Connection test timeout is 10 seconds; network issues may cause delays.
     """,
-    meta={"version": "1.3.0", "author": "guda.studio"},
+    meta={
+        "version": "1.3.0",
+        "author": "guda.studio"
+    },
 )
 async def get_config_info() -> str:
     import json
@@ -462,11 +563,7 @@ async def get_config_info() -> str:
     config_info = config.get_config_info()
 
     # 添加连接测试
-    test_result = {
-        "status": "未测试",
-        "message": "",
-        "response_time_ms": 0
-    }
+    test_result = {"status": "未测试", "message": "", "response_time_ms": 0}
 
     try:
         api_url = config.grok_api_url
@@ -480,25 +577,26 @@ async def get_config_info() -> str:
         start_time = time.time()
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                models_url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-            )
+            response = await client.get(models_url,
+                                        headers={
+                                            "Authorization":
+                                            f"Bearer {api_key}",
+                                            "Content-Type": "application/json"
+                                        })
 
             response_time = (time.time() - start_time) * 1000  # 转换为毫秒
 
             if response.status_code == 200:
                 test_result["status"] = "✅ 连接成功"
-                test_result["message"] = f"成功获取模型列表 (HTTP {response.status_code})"
+                test_result[
+                    "message"] = f"成功获取模型列表 (HTTP {response.status_code})"
                 test_result["response_time_ms"] = round(response_time, 2)
 
                 # 尝试解析返回的模型列表
                 try:
                     models_data = response.json()
-                    if "data" in models_data and isinstance(models_data["data"], list):
+                    if "data" in models_data and isinstance(
+                            models_data["data"], list):
                         model_count = len(models_data["data"])
                         test_result["message"] += f"，共 {model_count} 个模型"
 
@@ -514,7 +612,8 @@ async def get_config_info() -> str:
                     pass
             else:
                 test_result["status"] = "⚠️ 连接异常"
-                test_result["message"] = f"HTTP {response.status_code}: {response.text[:100]}"
+                test_result[
+                    "message"] = f"HTTP {response.status_code}: {response.text[:100]}"
                 test_result["response_time_ms"] = round(response_time, 2)
 
     except httpx.TimeoutException:
@@ -551,11 +650,15 @@ async def get_config_info() -> str:
         - Invalid model IDs may cause API errors in subsequent requests.
         - Model changes persist across sessions until explicitly changed again.
     """,
-    meta={"version": "1.3.0", "author": "guda.studio"},
+    meta={
+        "version": "1.3.0",
+        "author": "guda.studio"
+    },
 )
-async def switch_model(
-    model: Annotated[str, "Model ID to switch to (e.g., 'grok-4-fast', 'grok-2-latest', 'grok-vision-beta')."]
-) -> str:
+async def switch_model(model: Annotated[
+    str,
+    "Model ID to switch to (e.g., 'grok-4-fast', 'grok-2-latest', 'grok-vision-beta')."]
+                       ) -> str:
     import json
 
     try:
@@ -574,16 +677,10 @@ async def switch_model(
         return json.dumps(result, ensure_ascii=False, indent=2)
 
     except ValueError as e:
-        result = {
-            "status": "❌ 失败",
-            "message": f"切换模型失败: {str(e)}"
-        }
+        result = {"status": "❌ 失败", "message": f"切换模型失败: {str(e)}"}
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
-        result = {
-            "status": "❌ 失败",
-            "message": f"未知错误: {str(e)}"
-        }
+        result = {"status": "❌ 失败", "message": f"未知错误: {str(e)}"}
         return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -603,11 +700,15 @@ async def switch_model(
         - Use "off" to restore Claude Code's native tools.
         - Use "status" to check current configuration without modification.
     """,
-    meta={"version": "1.3.0", "author": "guda.studio"},
+    meta={
+        "version": "1.3.0",
+        "author": "guda.studio"
+    },
 )
-async def toggle_builtin_tools(
-    action: Annotated[str, "Action to perform: 'on' (block built-in), 'off' (allow built-in), or 'status' (check current state)."] = "status"
-) -> str:
+async def toggle_builtin_tools(action: Annotated[
+    str,
+    "Action to perform: 'on' (block built-in), 'off' (allow built-in), or 'status' (check current state)."] = "status"
+                               ) -> str:
     import json
 
     # Locate project root
@@ -648,12 +749,15 @@ async def toggle_builtin_tools(
     else:
         msg = f"官方工具当前{'已禁用' if blocked else '已启用'}"
 
-    return json.dumps({
-        "blocked": blocked,
-        "deny_list": deny,
-        "file": str(settings_path),
-        "message": msg
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "blocked": blocked,
+            "deny_list": deny,
+            "file": str(settings_path),
+            "message": msg
+        },
+        ensure_ascii=False,
+        indent=2)
 
 
 @mcp.tool(
@@ -670,18 +774,28 @@ async def toggle_builtin_tools(
 async def plan_intent(
     thought: Annotated[str, "Reasoning for this phase"],
     core_question: Annotated[str, "Distilled core question in one sentence"],
-    query_type: Annotated[str, "factual | comparative | exploratory | analytical"],
-    time_sensitivity: Annotated[str, "realtime | recent | historical | irrelevant"],
-    session_id: Annotated[str, "Empty for new session, or existing ID to revise"] = "",
+    query_type: Annotated[str,
+                          "factual | comparative | exploratory | analytical"],
+    time_sensitivity: Annotated[str,
+                                "realtime | recent | historical | irrelevant"],
+    session_id: Annotated[
+        str, "Empty for new session, or existing ID to revise"] = "",
     confidence: Annotated[float, "Confidence 0.0-1.0"] = 1.0,
     domain: Annotated[str, "Specific domain if identifiable"] = "",
-    premise_valid: Annotated[Optional[bool], "False if the question contains a flawed assumption"] = None,
+    premise_valid: Annotated[
+        Optional[bool],
+        "False if the question contains a flawed assumption"] = None,
     ambiguities: Annotated[str, "Comma-separated unresolved ambiguities"] = "",
-    unverified_terms: Annotated[str, "Comma-separated external terms to verify"] = "",
+    unverified_terms: Annotated[
+        str, "Comma-separated external terms to verify"] = "",
     is_revision: Annotated[bool, "True to overwrite existing intent"] = False,
 ) -> str:
     import json
-    data = {"core_question": core_question, "query_type": query_type, "time_sensitivity": time_sensitivity}
+    data = {
+        "core_question": core_question,
+        "query_type": query_type,
+        "time_sensitivity": time_sensitivity
+    }
     if domain:
         data["domain"] = domain
     if premise_valid is not None:
@@ -691,15 +805,22 @@ async def plan_intent(
     if unverified_terms:
         data["unverified_terms"] = _split_csv(unverified_terms)
     return json.dumps(planning_engine.process_phase(
-        phase="intent_analysis", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence, phase_data=data,
-    ), ensure_ascii=False, indent=2)
+        phase="intent_analysis",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data=data,
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 @mcp.tool(
     name="plan_complexity",
     output_schema=None,
-    description="Phase 2: Assess search complexity (1-3). Controls required phases: Level 1 = phases 1-3; Level 2 = phases 1-5; Level 3 = all 6.",
+    description=
+    "Phase 2: Assess search complexity (1-3). Controls required phases: Level 1 = phases 1-3; Level 2 = phases 1-5; Level 3 = all 6.",
 )
 async def plan_complexity(
     session_id: Annotated[str, "Session ID from plan_intent"],
@@ -713,19 +834,32 @@ async def plan_complexity(
 ) -> str:
     import json
     if not planning_engine.get_session(session_id):
-        return json.dumps({"error": f"Session '{session_id}' not found. Call plan_intent first."})
+        return json.dumps({
+            "error":
+            f"Session '{session_id}' not found. Call plan_intent first."
+        })
     return json.dumps(planning_engine.process_phase(
-        phase="complexity_assessment", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence,
-        phase_data={"level": level, "estimated_sub_queries": estimated_sub_queries,
-                     "estimated_tool_calls": estimated_tool_calls, "justification": justification},
-    ), ensure_ascii=False, indent=2)
+        phase="complexity_assessment",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data={
+            "level": level,
+            "estimated_sub_queries": estimated_sub_queries,
+            "estimated_tool_calls": estimated_tool_calls,
+            "justification": justification
+        },
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 @mcp.tool(
     name="plan_sub_query",
     output_schema=None,
-    description="Phase 3: Add one sub-query. Call once per sub-query; data accumulates across calls. Set is_revision=true to replace all.",
+    description=
+    "Phase 3: Add one sub-query. Call once per sub-query; data accumulates across calls. Set is_revision=true to replace all.",
 )
 async def plan_sub_query(
     session_id: Annotated[str, "Session ID from plan_intent"],
@@ -733,7 +867,8 @@ async def plan_sub_query(
     id: Annotated[str, "Unique ID (e.g., 'sq1')"],
     goal: Annotated[str, "Sub-query goal"],
     expected_output: Annotated[str, "What success looks like"],
-    boundary: Annotated[str, "What this excludes — mutual exclusion with siblings"],
+    boundary: Annotated[str,
+                        "What this excludes — mutual exclusion with siblings"],
     confidence: Annotated[float, "Confidence 0.0-1.0"] = 1.0,
     depends_on: Annotated[str, "Comma-separated prerequisite IDs"] = "",
     tool_hint: Annotated[str, "web_search | web_fetch | web_map"] = "",
@@ -741,22 +876,37 @@ async def plan_sub_query(
 ) -> str:
     import json
     if not planning_engine.get_session(session_id):
-        return json.dumps({"error": f"Session '{session_id}' not found. Call plan_intent first."})
-    item = {"id": id, "goal": goal, "expected_output": expected_output, "boundary": boundary}
+        return json.dumps({
+            "error":
+            f"Session '{session_id}' not found. Call plan_intent first."
+        })
+    item = {
+        "id": id,
+        "goal": goal,
+        "expected_output": expected_output,
+        "boundary": boundary
+    }
     if depends_on:
         item["depends_on"] = _split_csv(depends_on)
     if tool_hint:
         item["tool_hint"] = tool_hint
     return json.dumps(planning_engine.process_phase(
-        phase="query_decomposition", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence, phase_data=item,
-    ), ensure_ascii=False, indent=2)
+        phase="query_decomposition",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data=item,
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 @mcp.tool(
     name="plan_search_term",
     output_schema=None,
-    description="Phase 4: Add one search term. Call once per term; data accumulates. First call must set approach.",
+    description=
+    "Phase 4: Add one search term. Call once per term; data accumulates. First call must set approach.",
 )
 async def plan_search_term(
     session_id: Annotated[str, "Session ID from plan_intent"],
@@ -765,28 +915,46 @@ async def plan_search_term(
     purpose: Annotated[str, "Sub-query ID this serves (e.g., 'sq1')"],
     round: Annotated[int, "Execution round: 1=broad, 2+=targeted follow-up"],
     confidence: Annotated[float, "Confidence 0.0-1.0"] = 1.0,
-    approach: Annotated[str, "broad_first | narrow_first | targeted (required on first call)"] = "",
+    approach: Annotated[
+        str,
+        "broad_first | narrow_first | targeted (required on first call)"] = "",
     fallback_plan: Annotated[str, "Fallback if primary searches fail"] = "",
     is_revision: Annotated[bool, "True to replace all search terms"] = False,
 ) -> str:
     import json
     if not planning_engine.get_session(session_id):
-        return json.dumps({"error": f"Session '{session_id}' not found. Call plan_intent first."})
-    data = {"search_terms": [{"term": term, "purpose": purpose, "round": round}]}
+        return json.dumps({
+            "error":
+            f"Session '{session_id}' not found. Call plan_intent first."
+        })
+    data = {
+        "search_terms": [{
+            "term": term,
+            "purpose": purpose,
+            "round": round
+        }]
+    }
     if approach:
         data["approach"] = approach
     if fallback_plan:
         data["fallback_plan"] = fallback_plan
     return json.dumps(planning_engine.process_phase(
-        phase="search_strategy", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence, phase_data=data,
-    ), ensure_ascii=False, indent=2)
+        phase="search_strategy",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data=data,
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 @mcp.tool(
     name="plan_tool_mapping",
     output_schema=None,
-    description="Phase 5: Map a sub-query to a tool. Call once per mapping; data accumulates.",
+    description=
+    "Phase 5: Map a sub-query to a tool. Call once per mapping; data accumulates.",
 )
 async def plan_tool_mapping(
     session_id: Annotated[str, "Session ID from plan_intent"],
@@ -795,12 +963,16 @@ async def plan_tool_mapping(
     tool: Annotated[str, "web_search | web_fetch | web_map"],
     reason: Annotated[str, "Why this tool for this sub-query"],
     confidence: Annotated[float, "Confidence 0.0-1.0"] = 1.0,
-    params_json: Annotated[str, "Optional JSON string for tool-specific params"] = "",
+    params_json: Annotated[
+        str, "Optional JSON string for tool-specific params"] = "",
     is_revision: Annotated[bool, "True to replace all mappings"] = False,
 ) -> str:
     import json
     if not planning_engine.get_session(session_id):
-        return json.dumps({"error": f"Session '{session_id}' not found. Call plan_intent first."})
+        return json.dumps({
+            "error":
+            f"Session '{session_id}' not found. Call plan_intent first."
+        })
     item = {"sub_query_id": sub_query_id, "tool": tool, "reason": reason}
     if params_json:
         try:
@@ -808,20 +980,29 @@ async def plan_tool_mapping(
         except json.JSONDecodeError:
             pass
     return json.dumps(planning_engine.process_phase(
-        phase="tool_selection", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence, phase_data=item,
-    ), ensure_ascii=False, indent=2)
+        phase="tool_selection",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data=item,
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 @mcp.tool(
     name="plan_execution",
     output_schema=None,
-    description="Phase 6: Define execution order. parallel_groups: semicolon-separated groups of comma-separated IDs (e.g., 'sq1,sq2;sq3').",
+    description=
+    "Phase 6: Define execution order. parallel_groups: semicolon-separated groups of comma-separated IDs (e.g., 'sq1,sq2;sq3').",
 )
 async def plan_execution(
     session_id: Annotated[str, "Session ID from plan_intent"],
     thought: Annotated[str, "Reasoning for execution order"],
-    parallel_groups: Annotated[str, "Parallel batches: 'sq1,sq2;sq3,sq4' (semicolon=groups, comma=IDs)"],
+    parallel_groups: Annotated[
+        str,
+        "Parallel batches: 'sq1,sq2;sq3,sq4' (semicolon=groups, comma=IDs)"],
     sequential: Annotated[str, "Comma-separated IDs that must run in order"],
     estimated_rounds: Annotated[int, "Estimated execution rounds"],
     confidence: Annotated[float, "Confidence 0.0-1.0"] = 1.0,
@@ -829,25 +1010,63 @@ async def plan_execution(
 ) -> str:
     import json
     if not planning_engine.get_session(session_id):
-        return json.dumps({"error": f"Session '{session_id}' not found. Call plan_intent first."})
-    parallel = [_split_csv(g) for g in parallel_groups.split(";") if g.strip()] if parallel_groups else []
+        return json.dumps({
+            "error":
+            f"Session '{session_id}' not found. Call plan_intent first."
+        })
+    parallel = [
+        _split_csv(g) for g in parallel_groups.split(";") if g.strip()
+    ] if parallel_groups else []
     seq = _split_csv(sequential)
     return json.dumps(planning_engine.process_phase(
-        phase="execution_order", thought=thought, session_id=session_id,
-        is_revision=is_revision, confidence=confidence,
-        phase_data={"parallel": parallel, "sequential": seq, "estimated_rounds": estimated_rounds},
-    ), ensure_ascii=False, indent=2)
+        phase="execution_order",
+        thought=thought,
+        session_id=session_id,
+        is_revision=is_revision,
+        confidence=confidence,
+        phase_data={
+            "parallel": parallel,
+            "sequential": seq,
+            "estimated_rounds": estimated_rounds
+        },
+    ),
+                      ensure_ascii=False,
+                      indent=2)
 
 
 def main():
     import signal
-    import os
     import threading
+
+    def _env_bool(name: str, default: bool = False) -> bool:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        return value.strip().lower() in ("1", "true", "yes", "on")
+
+    def _resolve_transport() -> str:
+        raw = (os.getenv("MCP_TRANSPORT", "stdio") or "stdio").strip().lower()
+        aliases = {
+            "streamable-http": "http",
+            "streamable_http": "http",
+            "http": "http",
+            "sse": "sse",
+            "stdio": "stdio",
+        }
+        return aliases.get(raw, "stdio")
+
+    transport = _resolve_transport()
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("MCP_PORT", os.getenv("PORT", "8000")))
+    path = os.getenv("MCP_PATH", "/mcp")
+    stateless_http = _env_bool("MCP_STATELESS_HTTP", True)
 
     # 信号处理（仅主线程）
     if threading.current_thread() is threading.main_thread():
+
         def handle_shutdown(signum, frame):
             os._exit(0)
+
         signal.signal(signal.SIGINT, handle_shutdown)
         if sys.platform != 'win32':
             signal.signal(signal.SIGTERM, handle_shutdown)
@@ -863,11 +1082,13 @@ def main():
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
             STILL_ACTIVE = 259
             kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                          False, pid)
             if not handle:
                 return True
             exit_code = ctypes.c_ulong()
-            result = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            result = kernel32.GetExitCodeProcess(handle,
+                                                 ctypes.byref(exit_code))
             kernel32.CloseHandle(handle)
             return result and exit_code.value == STILL_ACTIVE
 
@@ -880,7 +1101,30 @@ def main():
         threading.Thread(target=monitor_parent, daemon=True).start()
 
     try:
-        mcp.run(transport="stdio", show_banner=False)
+        if transport == "stdio":
+            mcp.run(transport="stdio", show_banner=False)
+        elif transport == "sse":
+            mcp.run(transport="sse", host=host, port=port, show_banner=False)
+        else:
+            # http = Streamable HTTP transport
+            try:
+                mcp.run(
+                    transport="http",
+                    host=host,
+                    port=port,
+                    path=path,
+                    stateless_http=stateless_http,
+                    show_banner=False,
+                )
+            except TypeError:
+                # 兼容较旧 FastMCP 版本（可能不支持部分参数）
+                mcp.run(
+                    transport="http",
+                    host=host,
+                    port=port,
+                    path=path,
+                    show_banner=False,
+                )
     except KeyboardInterrupt:
         pass
     finally:

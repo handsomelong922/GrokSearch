@@ -153,6 +153,62 @@ Call grok-search toggle_builtin_tools to disable Claude Code's built-in WebSearc
 ```
 This will automatically modify the **project-level** `.claude/settings.json` `permissions.deny`, disabling Claude Code's built-in WebSearch and WebFetch, forcing Claude Code to use this project for searches!
 
+### Docker Deployment (HTTP / SSE, image + env platforms)
+
+Yes — this project can be deployed as a remote MCP service and consumed via URL by other AI clients.
+
+Transport can be selected by environment variable:
+
+- `MCP_TRANSPORT=http`: Streamable HTTP (recommended)
+- `MCP_TRANSPORT=sse`: SSE (legacy compatibility)
+- `MCP_TRANSPORT=stdio`: local stdio mode
+
+The Docker image defaults to HTTP on `0.0.0.0:8000` with MCP path `/mcp`.
+
+```bash
+docker build -t grok-search-mcp:latest .
+
+docker run --rm -p 8000:8000 \
+  -e GROK_API_URL="https://your-api-endpoint.com/v1" \
+  -e GROK_API_KEY="your-grok-api-key" \
+  -e TAVILY_API_KEY="tvly-your-tavily-key" \
+  -e FIRECRAWL_API_KEY="your-firecrawl-key" \
+  grok-search-mcp:latest
+```
+
+MCP endpoint: `http://localhost:8000/mcp`
+
+For SSE:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e MCP_TRANSPORT="sse" \
+  -e GROK_API_URL="https://your-api-endpoint.com/v1" \
+  -e GROK_API_KEY="your-grok-api-key" \
+  grok-search-mcp:latest
+```
+
+For platforms that only support image + env (e.g. Claw Cloud), this works directly:
+
+1. Push image (Docker Hub/GHCR)
+2. Fill image URL in platform
+3. Set env vars (`GROK_API_URL`, `GROK_API_KEY`, optional `MCP_*`)
+
+This repo also includes GitHub Actions for automatic GHCR image publishing:
+
+- Workflow: `.github/workflows/docker-publish.yml`
+- Typical image: `ghcr.io/<your-github-username>/groksearch:latest`
+
+Optional runtime envs:
+
+- `MCP_TRANSPORT` (`http` / `sse`)
+- `MCP_HOST` (default `0.0.0.0`)
+- `MCP_PORT` (reads `PORT` first, else `8000`)
+- `MCP_PATH` (default `/mcp`)
+- `MCP_STATELESS_HTTP` (default `true`)
+
+After deployment, use `${PUBLIC_URL}/mcp` in your AI client's MCP URL config.
+
 
 
 ## 3. MCP Tools

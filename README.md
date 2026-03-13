@@ -151,6 +151,66 @@ claude mcp list
 ```
 工具将自动修改**项目级** `.claude/settings.json` 的 `permissions.deny`，一键禁用 Claude Code 官方的 WebSearch 和 WebFetch，从而迫使claude code调用本项目实现搜索！
 
+### Docker 部署（HTTP / SSE，适配仅支持“镜像+环境变量”的平台）
+
+可以。这个项目可以直接做成远程 MCP 服务，通过 URL 给其他 AI 客户端使用。
+
+本仓库已支持通过环境变量切换传输协议：
+
+- `MCP_TRANSPORT=http`：Streamable HTTP（推荐）
+- `MCP_TRANSPORT=sse`：SSE（兼容旧客户端）
+- `MCP_TRANSPORT=stdio`：本地标准输入输出模式
+
+默认 Docker 镜像会使用 HTTP，并监听 `0.0.0.0:8000`，MCP 路径为 `/mcp`。
+
+#### 1) 本地构建与启动
+
+```bash
+docker build -t grok-search-mcp:latest .
+
+docker run --rm -p 8000:8000 \
+  -e GROK_API_URL="https://your-api-endpoint.com/v1" \
+  -e GROK_API_KEY="your-grok-api-key" \
+  -e TAVILY_API_KEY="tvly-your-tavily-key" \
+  -e FIRECRAWL_API_KEY="your-firecrawl-key" \
+  grok-search-mcp:latest
+```
+
+启动后 MCP URL：`http://localhost:8000/mcp`
+
+#### 2) 切换为 SSE
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e MCP_TRANSPORT="sse" \
+  -e GROK_API_URL="https://your-api-endpoint.com/v1" \
+  -e GROK_API_KEY="your-grok-api-key" \
+  grok-search-mcp:latest
+```
+
+#### 3) 部署到“只能填镜像地址+环境变量”的平台（如爪子云）
+
+可行。你只需要：
+
+1. 上传/发布镜像（Docker Hub 或 GHCR）
+2. 在平台填镜像地址
+3. 填环境变量（至少 `GROK_API_URL`、`GROK_API_KEY`）
+
+仓库已提供 GitHub Actions 自动构建并推送 GHCR 镜像：
+
+- 工作流文件：`.github/workflows/docker-publish.yml`
+- 典型镜像地址：`ghcr.io/<你的GitHub用户名>/groksearch:latest`
+
+可选平台变量：
+
+- `MCP_TRANSPORT`：`http` 或 `sse`
+- `MCP_HOST`：默认 `0.0.0.0`
+- `MCP_PORT`：默认读取 `PORT`，否则 `8000`
+- `MCP_PATH`：默认 `/mcp`
+- `MCP_STATELESS_HTTP`：默认 `true`（更适合云上负载均衡）
+
+平台部署完成后会给你一个公网 URL，把 `${URL}/mcp` 填到 AI 客户端的 MCP 连接地址即可。
+
 
 
 ## 三、MCP 工具介绍
