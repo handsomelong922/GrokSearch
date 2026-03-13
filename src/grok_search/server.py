@@ -210,7 +210,26 @@ async def web_search(
     if firecrawl_count > 0:
         coros.append(_safe_firecrawl())
 
-    gathered = await asyncio.gather(*coros)
+    search_timeout_seconds = float(
+        os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "25")
+    )
+    try:
+        gathered = await asyncio.wait_for(
+            asyncio.gather(*coros),
+            timeout=max(5.0, search_timeout_seconds),
+        )
+    except asyncio.TimeoutError:
+        await _SOURCES_CACHE.set(session_id, [])
+        return {
+            "session_id": session_id,
+            "content": (
+                "搜索超时：上游搜索服务响应过慢。"
+                "请稍后重试，或切换更快模型（如 grok-4-fast），"
+                "也可缩小查询范围后重试。"
+            ),
+            "sources_count": 0,
+            "error": "web_search_timeout",
+        }
 
     grok_result: str = gathered[0] or ""
     tavily_results: list[dict] | None = None
@@ -225,6 +244,18 @@ async def web_search(
     answer, grok_sources = split_answer_and_sources(grok_result)
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
     all_sources = merge_sources(grok_sources, extra)
+
+    if not answer.strip() and not all_sources:
+        await _SOURCES_CACHE.set(session_id, [])
+        return {
+            "session_id": session_id,
+            "content": (
+                "搜索未返回有效结果。请检查 GROK_API_URL/GROK_API_KEY，"
+                "并确认上游接口可访问后重试。"
+            ),
+            "sources_count": 0,
+            "error": "web_search_empty",
+        }
 
     await _SOURCES_CACHE.set(session_id, all_sources)
     return {
