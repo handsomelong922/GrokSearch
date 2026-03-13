@@ -211,8 +211,7 @@ async def web_search(
         coros.append(_safe_firecrawl())
 
     search_timeout_seconds = float(
-        os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "25")
-    )
+        os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "180"))
     try:
         gathered = await asyncio.wait_for(
             asyncio.gather(*coros),
@@ -221,14 +220,15 @@ async def web_search(
     except asyncio.TimeoutError:
         await _SOURCES_CACHE.set(session_id, [])
         return {
-            "session_id": session_id,
-            "content": (
-                "搜索超时：上游搜索服务响应过慢。"
-                "请稍后重试，或切换更快模型（如 grok-4-fast），"
-                "也可缩小查询范围后重试。"
-            ),
-            "sources_count": 0,
-            "error": "web_search_timeout",
+            "session_id":
+            session_id,
+            "content": ("搜索超时：上游搜索服务响应过慢。"
+                        "请稍后重试，或切换更快模型（如 grok-4-fast），"
+                        "也可缩小查询范围后重试。"),
+            "sources_count":
+            0,
+            "error":
+            "web_search_timeout",
         }
 
     grok_result: str = gathered[0] or ""
@@ -248,13 +248,14 @@ async def web_search(
     if not answer.strip() and not all_sources:
         await _SOURCES_CACHE.set(session_id, [])
         return {
-            "session_id": session_id,
-            "content": (
-                "搜索未返回有效结果。请检查 GROK_API_URL/GROK_API_KEY，"
-                "并确认上游接口可访问后重试。"
-            ),
-            "sources_count": 0,
-            "error": "web_search_empty",
+            "session_id":
+            session_id,
+            "content": ("搜索未返回有效结果。请检查 GROK_API_URL/GROK_API_KEY，"
+                        "并确认上游接口可访问后重试。"),
+            "sources_count":
+            0,
+            "error":
+            "web_search_empty",
         }
 
     await _SOURCES_CACHE.set(session_id, all_sources)

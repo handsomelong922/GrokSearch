@@ -1,3 +1,4 @@
+import os
 import httpx
 import json
 from datetime import datetime, timezone
@@ -214,7 +215,15 @@ class GrokSearchProvider(BaseSearchProvider):
 
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         """执行带重试机制的流式 HTTP 请求"""
-        timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
+        connect_timeout = float(os.getenv("GROK_HTTP_CONNECT_TIMEOUT_SECONDS", "10"))
+        read_timeout = float(os.getenv("GROK_HTTP_READ_TIMEOUT_SECONDS", "240"))
+        write_timeout = float(os.getenv("GROK_HTTP_WRITE_TIMEOUT_SECONDS", "20"))
+        timeout = httpx.Timeout(
+            connect=max(1.0, connect_timeout),
+            read=max(10.0, read_timeout),
+            write=max(1.0, write_timeout),
+            pool=None,
+        )
 
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             async for attempt in AsyncRetrying(
