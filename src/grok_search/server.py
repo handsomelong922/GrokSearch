@@ -299,39 +299,37 @@ async def get_sources(
 async def _call_tavily_extract(url: str) -> str | None:
     import httpx
     api_url = config.tavily_api_url
-    api_key = config.tavily_api_key
-    if not api_key:
+    api_keys = config.get_tavily_api_keys_in_rotation_order()
+    if not api_keys:
         return None
     endpoint = f"{api_url.rstrip('/')}/extract"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
     body = {"urls": [url], "format": "markdown"}
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("results") and len(data["results"]) > 0:
-                content = data["results"][0].get("raw_content", "")
-                return content if content and content.strip() else None
-            return None
-    except Exception:
-        return None
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for api_key in api_keys:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            try:
+                response = await client.post(endpoint, headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
+                if data.get("results") and len(data["results"]) > 0:
+                    content = data["results"][0].get("raw_content", "")
+                    return content if content and content.strip() else None
+                return None
+            except Exception:
+                continue
+    return None
 
 
 async def _call_tavily_search(query: str,
                               max_results: int = 6) -> list[dict] | None:
     import httpx
-    api_key = config.tavily_api_key
-    if not api_key:
+    api_keys = config.get_tavily_api_keys_in_rotation_order()
+    if not api_keys:
         return None
     endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
     body = {
         "query": query,
         "max_results": max_results,
@@ -339,20 +337,26 @@ async def _call_tavily_search(query: str,
         "include_raw_content": False,
         "include_answer": False,
     }
-    try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("results", [])
-            return [{
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "content": r.get("content", ""),
-                "score": r.get("score", 0)
-            } for r in results] if results else None
-    except Exception:
-        return None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        for api_key in api_keys:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            try:
+                response = await client.post(endpoint, headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
+                results = data.get("results", [])
+                return [{
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "content": r.get("content", ""),
+                    "score": r.get("score", 0)
+                } for r in results] if results else None
+            except Exception:
+                continue
+    return None
 
 
 async def _call_firecrawl_search(query: str,
@@ -476,14 +480,10 @@ async def _call_tavily_map(url: str,
     import httpx
     import json
     api_url = config.tavily_api_url
-    api_key = config.tavily_api_key
-    if not api_key:
+    api_keys = config.get_tavily_api_keys_in_rotation_order()
+    if not api_keys:
         return "配置错误: TAVILY_API_KEY 未配置，请设置环境变量 TAVILY_API_KEY"
     endpoint = f"{api_url.rstrip('/')}/map"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
     body = {
         "url": url,
         "max_depth": max_depth,
@@ -493,25 +493,40 @@ async def _call_tavily_map(url: str,
     }
     if instructions:
         body["instructions"] = instructions
-    try:
-        async with httpx.AsyncClient(timeout=float(timeout + 10)) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            return json.dumps(
-                {
-                    "base_url": data.get("base_url", ""),
-                    "results": data.get("results", []),
-                    "response_time": data.get("response_time", 0)
-                },
-                ensure_ascii=False,
-                indent=2)
-    except httpx.TimeoutException:
+    timeout_error = False
+    last_http_error: httpx.HTTPStatusError | None = None
+    last_exception: Exception | None = None
+    async with httpx.AsyncClient(timeout=float(timeout + 10)) as client:
+        for api_key in api_keys:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            try:
+                response = await client.post(endpoint, headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
+                return json.dumps(
+                    {
+                        "base_url": data.get("base_url", ""),
+                        "results": data.get("results", []),
+                        "response_time": data.get("response_time", 0)
+                    },
+                    ensure_ascii=False,
+                    indent=2)
+            except httpx.TimeoutException:
+                timeout_error = True
+            except httpx.HTTPStatusError as e:
+                last_http_error = e
+            except Exception as e:
+                last_exception = e
+    if timeout_error:
         return f"映射超时: 请求超过{timeout}秒"
-    except httpx.HTTPStatusError as e:
-        return f"HTTP错误: {e.response.status_code} - {e.response.text[:200]}"
-    except Exception as e:
-        return f"映射错误: {str(e)}"
+    if last_http_error is not None:
+        return f"HTTP错误: {last_http_error.response.status_code} - {last_http_error.response.text[:200]}"
+    if last_exception is not None:
+        return f"映射错误: {str(last_exception)}"
+    return "映射错误: 未获取到有效响应"
 
 
 @mcp.tool(
