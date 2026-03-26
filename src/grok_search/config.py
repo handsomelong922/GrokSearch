@@ -2,6 +2,7 @@ import os
 import json
 from pathlib import Path
 
+
 class Config:
     _instance = None
     _SETUP_COMMAND = (
@@ -17,6 +18,7 @@ class Config:
             cls._instance = super().__new__(cls)
             cls._instance._config_file = None
             cls._instance._cached_model = None
+            cls._instance._tavily_key_index = 0
         return cls._instance
 
     @property
@@ -94,6 +96,21 @@ class Config:
     @property
     def tavily_api_key(self) -> str | None:
         return os.getenv("TAVILY_API_KEY")
+
+    @property
+    def tavily_api_keys(self) -> list[str]:
+        raw = self.tavily_api_key
+        if not raw:
+            return []
+        return [key.strip() for key in raw.split(",") if key.strip()]
+
+    def get_tavily_api_keys_in_rotation_order(self) -> list[str]:
+        keys = self.tavily_api_keys
+        if not keys:
+            return []
+        start = self._tavily_key_index % len(keys)
+        self._tavily_key_index = (self._tavily_key_index + 1) % len(keys)
+        return keys[start:] + keys[:start]
 
     @property
     def firecrawl_api_url(self) -> str:
@@ -188,7 +205,9 @@ class Config:
             "GROK_LOG_DIR": str(self.log_dir),
             "TAVILY_API_URL": self.tavily_api_url,
             "TAVILY_ENABLED": self.tavily_enabled,
-            "TAVILY_API_KEY": self._mask_api_key(self.tavily_api_key) if self.tavily_api_key else "未配置",
+            "TAVILY_API_KEY": ", ".join(
+                self._mask_api_key(key) for key in self.tavily_api_keys
+            ) if self.tavily_api_keys else "未配置",
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
             "config_status": config_status

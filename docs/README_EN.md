@@ -111,7 +111,7 @@ claude mcp add-json grok-search --scope user '{
   "env": {
     "GROK_API_URL": "https://your-api-endpoint.com/v1",
     "GROK_API_KEY": "your-grok-api-key",
-    "TAVILY_API_KEY": "tvly-your-tavily-key",
+    "TAVILY_API_KEY": "tvly-your-tavily-key-1,tvly-your-tavily-key-2",
     "TAVILY_API_URL": "https://api.tavily.com"
   }
 }'
@@ -126,7 +126,7 @@ You can also configure additional environment variables in the `env` field:
 | `GROK_API_URL` | No | `{GUDA_BASE_URL}/grok/v1` | Grok API endpoint (OpenAI-compatible), overrides GuDa-derived value |
 | `GROK_API_KEY` | No | `{GUDA_API_KEY}` | Grok API key, overrides GuDa-derived value |
 | `GROK_MODEL` | No | `grok-4.20-beta` | Default model (takes precedence over `~/.config/grok-search/config.json` when set) |
-| `TAVILY_API_KEY` | No | `{GUDA_API_KEY}` | Tavily API key (for web_fetch / web_map) |
+| `TAVILY_API_KEY` | No | `{GUDA_API_KEY}` | Tavily API key (for web_fetch / web_map, supports comma-separated keys with round-robin rotation) |
 | `TAVILY_API_URL` | No | `{GUDA_BASE_URL}/tavily` | Tavily API endpoint |
 | `TAVILY_ENABLED` | No | `true` | Enable Tavily |
 | `FIRECRAWL_API_KEY` | No | `{GUDA_API_KEY}` | Firecrawl API key (fallback when Tavily fails) |
@@ -171,7 +171,7 @@ docker build -t grok-search-mcp:latest .
 docker run --rm -p 8000:8000 \
   -e GROK_API_URL="https://your-api-endpoint.com/v1" \
   -e GROK_API_KEY="your-grok-api-key" \
-  -e TAVILY_API_KEY="tvly-your-tavily-key" \
+  -e TAVILY_API_KEY="tvly-your-tavily-key-1,tvly-your-tavily-key-2" \
   -e FIRECRAWL_API_KEY="your-firecrawl-key" \
   grok-search-mcp:latest
 ```

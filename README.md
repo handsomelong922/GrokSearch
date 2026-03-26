@@ -86,7 +86,7 @@ claude mcp add-json grok-search --scope user '{
   "env": {
     "GROK_API_URL": "https://your-api-endpoint.com/v1",
     "GROK_API_KEY": "your-grok-api-key",
-    "TAVILY_API_KEY": "tvly-your-tavily-key",
+    "TAVILY_API_KEY": "tvly-your-tavily-key-1,tvly-your-tavily-key-2",
     "TAVILY_API_URL": "https://api.tavily.com"
   }
 }'
@@ -113,7 +113,7 @@ claude mcp add-json grok-search --scope user '{
   "env": {
     "GROK_API_URL": "https://your-api-endpoint.com/v1",
     "GROK_API_KEY": "your-grok-api-key",
-    "TAVILY_API_KEY": "tvly-your-tavily-key",
+    "TAVILY_API_KEY": "tvly-your-tavily-key-1,tvly-your-tavily-key-2",
     "TAVILY_API_URL": "https://api.tavily.com"
   }
 }'
@@ -126,7 +126,7 @@ claude mcp add-json grok-search --scope user '{
 | `GROK_API_URL` | ✅ | - | Grok API 地址（OpenAI 兼容格式） |
 | `GROK_API_KEY` | ✅ | - | Grok API 密钥 |
 | `GROK_MODEL` | ❌ | `grok-4-fast` | 默认模型（设置后优先于 `~/.config/grok-search/config.json`） |
-| `TAVILY_API_KEY` | ❌ | - | Tavily API 密钥（用于 web_fetch / web_map） |
+| `TAVILY_API_KEY` | ❌ | - | Tavily API 密钥（用于 web_fetch / web_map，支持逗号分隔多个密钥并轮询） |
 | `TAVILY_API_URL` | ❌ | `https://api.tavily.com` | Tavily API 地址 |
 | `TAVILY_ENABLED` | ❌ | `true` | 是否启用 Tavily |
 | `FIRECRAWL_API_KEY` | ❌ | - | Firecrawl API 密钥（Tavily 失败时托底） |
@@ -171,7 +171,7 @@ docker build -t grok-search-mcp:latest .
 docker run --rm -p 8000:8000 \
   -e GROK_API_URL="https://your-api-endpoint.com/v1" \
   -e GROK_API_KEY="your-grok-api-key" \
-  -e TAVILY_API_KEY="tvly-your-tavily-key" \
+  -e TAVILY_API_KEY="tvly-your-tavily-key-1,tvly-your-tavily-key-2" \
   -e FIRECRAWL_API_KEY="your-firecrawl-key" \
   grok-search-mcp:latest
 ```
