@@ -1,4 +1,5 @@
 import os
+import time
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ src_dir = Path(__file__).parent.parent
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+from collections import OrderedDict
 from fastmcp import FastMCP, Context
 from typing import Annotated, Optional
 from pydantic import Field
@@ -32,6 +34,65 @@ mcp = FastMCP("grok-search")
 _SOURCES_CACHE = SourcesCache(max_size=256)
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+
+
+class SearchResultCache:
+    """Simple TTL-based LRU cache for web_search results."""
+
+    def __init__(self, max_size: int = 128, ttl_seconds: int = 300):
+        self._max_size = max_size
+        self._ttl_seconds = ttl_seconds
+        self._cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+        self._lock = asyncio.Lock()
+
+    def _build_key(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+    ) -> str:
+        return f"{query}|{platform}|{model}|{extra_sources}|{mode}"
+
+    async def get(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+    ) -> dict | None:
+        key = self._build_key(query, platform, model, extra_sources, mode)
+        async with self._lock:
+            item = self._cache.get(key)
+            if item is None:
+                return None
+            ts, value = item
+            if time.time() - ts > self._ttl_seconds:
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return value
+
+    async def set(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+        value: dict,
+    ) -> None:
+        key = self._build_key(query, platform, model, extra_sources, mode)
+        async with self._lock:
+            self._cache[key] = (time.time(), value)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
+
+
+_RESULT_CACHE = SearchResultCache()
 
 
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
@@ -147,8 +208,14 @@ async def web_search(
         str,
         "Search mode: 'fast' (concise, quick), 'balanced' (moderate depth, default), 'deep' (thorough research). "
         "Use 'fast' for simple lookups, 'balanced' for general questions, 'deep' for complex research."] = "balanced",
-) -> dict:
+    ) -> dict:
     session_id = new_session_id()
+
+    # Check cache first
+    cached = await _RESULT_CACHE.get(query, platform, model, extra_sources, mode)
+    if cached is not None:
+        return cached
+
     try:
         api_url = config.grok_api_url
         api_key = config.grok_api_key
@@ -273,11 +340,14 @@ async def web_search(
         }
 
     await _SOURCES_CACHE.set(session_id, all_sources)
-    return {
+    result = {
         "session_id": session_id,
         "content": answer,
         "sources_count": len(all_sources)
     }
+    # Cache the result for subsequent identical queries
+    await _RESULT_CACHE.set(query, platform, model, extra_sources, mode, result)
+    return result
 
 
 @mcp.tool(
