@@ -189,34 +189,45 @@ async def web_search(
             tavily_count = extra_sources
 
     # 并行执行搜索任务
-    async def _safe_grok() -> str:
+    async def _safe_grok() -> tuple[str, str | None]:
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 grok_provider.search(query, platform, mode=mode),
                 timeout=float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120")),
             )
-        except Exception:
-            return ""
+            return result, None
+        except asyncio.TimeoutError:
+            return "", "grok_timeout"
+        except Exception as e:
+            return "", f"grok_error: {type(e).__name__}"
 
-    async def _safe_tavily() -> list[dict] | None:
+    async def _safe_tavily() -> tuple[list[dict] | None, str | None]:
         try:
             if tavily_count:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     _call_tavily_search(query, tavily_count),
                     timeout=float(os.getenv("WEB_SEARCH_TAVILY_TIMEOUT_SECONDS", "30")),
                 )
-        except Exception:
-            return None
+                return result, None
+        except asyncio.TimeoutError:
+            return None, "tavily_timeout"
+        except Exception as e:
+            return None, f"tavily_error: {type(e).__name__}"
+        return None, None
 
-    async def _safe_firecrawl() -> list[dict] | None:
+    async def _safe_firecrawl() -> tuple[list[dict] | None, str | None]:
         try:
             if firecrawl_count:
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     _call_firecrawl_search(query, firecrawl_count),
                     timeout=float(os.getenv("WEB_SEARCH_FIRECRAWL_TIMEOUT_SECONDS", "30")),
                 )
-        except Exception:
-            return None
+                return result, None
+        except asyncio.TimeoutError:
+            return None, "firecrawl_timeout"
+        except Exception as e:
+            return None, f"firecrawl_error: {type(e).__name__}"
+        return None, None
 
     coros: list = [_safe_grok()]
     if tavily_count > 0:
@@ -228,21 +239,25 @@ async def web_search(
     # no longer cancels others. Use asyncio.gather directly.
     gathered = await asyncio.gather(*coros)
 
-    grok_result: str = gathered[0] or ""
+    grok_result, grok_error = gathered[0] or ("", None)
     tavily_results: list[dict] | None = None
     firecrawl_results: list[dict] | None = None
+    tavily_error: str | None = None
+    firecrawl_error: str | None = None
     idx = 1
     if tavily_count > 0:
-        tavily_results = gathered[idx]
+        tavily_results, tavily_error = gathered[idx]
         idx += 1
     if firecrawl_count > 0:
-        firecrawl_results = gathered[idx]
+        firecrawl_results, firecrawl_error = gathered[idx]
 
     answer, grok_sources = split_answer_and_sources(grok_result)
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
     all_sources = merge_sources(grok_sources, extra)
 
     if not answer.strip() and not all_sources:
+        # Build a detailed error list for debugging.
+        errors = [e for e in [grok_error, tavily_error, firecrawl_error] if e]
         await _SOURCES_CACHE.set(session_id, [])
         return {
             "session_id":
@@ -252,7 +267,9 @@ async def web_search(
             "sources_count":
             0,
             "error":
-            "web_search_empty",
+            "web_search_empty" if not errors else "; ".join(errors),
+            "errors":
+            errors,
         }
 
     await _SOURCES_CACHE.set(session_id, all_sources)
