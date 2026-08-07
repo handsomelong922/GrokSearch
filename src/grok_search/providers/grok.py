@@ -1,4 +1,5 @@
 import os
+import asyncio
 import httpx
 import json
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from tenacity.wait import wait_base
 from zoneinfo import ZoneInfo
 from .base import BaseSearchProvider, SearchResult
-from ..utils import search_prompt, fetch_prompt, url_describe_prompt, rank_sources_prompt
+from ..utils import get_search_prompt, search_prompt, fetch_prompt, url_describe_prompt, rank_sources_prompt
 from ..logger import log_info
 from ..config import config
 
@@ -118,6 +119,33 @@ class _WaitWithRetryAfter(wait_base):
             return None
 
 
+# --- Shared HTTP client for connection reuse ---
+_shared_client: httpx.AsyncClient | None = None
+_shared_client_lock = asyncio.Lock()
+
+
+async def _get_shared_client(timeout: httpx.Timeout) -> httpx.AsyncClient:
+    """Get or create the shared HTTP client with connection pooling.
+
+    Parallel calls reuse the same connection pool, avoiding redundant
+    TCP/TLS handshakes.
+    """
+    global _shared_client
+    async with _shared_client_lock:
+        if _shared_client is None or _shared_client.is_closed:
+            limits = httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            )
+            _shared_client = httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                limits=limits,
+            )
+        return _shared_client
+
+
 class GrokSearchProvider(BaseSearchProvider):
     def __init__(self, api_url: str, api_key: str, model: str = "grok-4-fast"):
         super().__init__(api_url, api_key)
@@ -126,7 +154,7 @@ class GrokSearchProvider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "Grok"
 
-    async def search(self, query: str, platform: str = "", min_results: int = 3, max_results: int = 10, ctx=None) -> List[SearchResult]:
+    async def search(self, query: str, platform: str = "", mode: str = "balanced", min_results: int = 3, max_results: int = 10, ctx=None) -> List[SearchResult]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -138,12 +166,14 @@ class GrokSearchProvider(BaseSearchProvider):
 
         time_context = get_local_time_info() + "\n"
 
+        system_prompt = get_search_prompt(mode)
+
         payload = {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": search_prompt,
+                    "content": system_prompt,
                 },
                 {"role": "user", "content": time_context + query + platform_prompt},
             ],
@@ -151,6 +181,8 @@ class GrokSearchProvider(BaseSearchProvider):
         }
 
         await log_info(ctx, f"platform_prompt: { query + platform_prompt}", config.debug_enabled)
+        if mode != "balanced":
+            await log_info(ctx, f"search_mode: {mode}", config.debug_enabled)
 
         return await self._execute_stream_with_retry(headers, payload, ctx)
 
@@ -225,22 +257,22 @@ class GrokSearchProvider(BaseSearchProvider):
             pool=None,
         )
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
-                retry=retry_if_exception(_is_retryable_exception),
-                reraise=True,
-            ):
-                with attempt:
-                    async with client.stream(
-                        "POST",
-                        f"{self.api_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    ) as response:
-                        response.raise_for_status()
-                        return await self._parse_streaming_response(response, ctx)
+        client = await _get_shared_client(timeout)
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(config.retry_max_attempts + 1),
+            wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
+            retry=retry_if_exception(_is_retryable_exception),
+            reraise=True,
+        ):
+            with attempt:
+                async with client.stream(
+                    "POST",
+                    f"{self.api_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    return await self._parse_streaming_response(response, ctx)
 
     async def describe_url(self, url: str, ctx=None) -> dict:
         """让 Grok 阅读单个 URL 并返回 title + extracts"""

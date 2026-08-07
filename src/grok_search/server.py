@@ -1,4 +1,5 @@
 import os
+import time
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ src_dir = Path(__file__).parent.parent
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+from collections import OrderedDict
 from fastmcp import FastMCP, Context
 from typing import Annotated, Optional
 from pydantic import Field
@@ -32,6 +34,65 @@ mcp = FastMCP("grok-search")
 _SOURCES_CACHE = SourcesCache(max_size=256)
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+
+
+class SearchResultCache:
+    """Simple TTL-based LRU cache for web_search results."""
+
+    def __init__(self, max_size: int = 128, ttl_seconds: int = 300):
+        self._max_size = max_size
+        self._ttl_seconds = ttl_seconds
+        self._cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+        self._lock = asyncio.Lock()
+
+    def _build_key(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+    ) -> str:
+        return f"{query}|{platform}|{model}|{extra_sources}|{mode}"
+
+    async def get(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+    ) -> dict | None:
+        key = self._build_key(query, platform, model, extra_sources, mode)
+        async with self._lock:
+            item = self._cache.get(key)
+            if item is None:
+                return None
+            ts, value = item
+            if time.time() - ts > self._ttl_seconds:
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return value
+
+    async def set(
+        self,
+        query: str,
+        platform: str,
+        model: str,
+        extra_sources: int,
+        mode: str,
+        value: dict,
+    ) -> None:
+        key = self._build_key(query, platform, model, extra_sources, mode)
+        async with self._lock:
+            self._cache[key] = (time.time(), value)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
+
+
+_RESULT_CACHE = SearchResultCache()
 
 
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
@@ -118,7 +179,8 @@ def _extra_results_to_sources(
     output_schema=None,
     description="""
     Before using this tool, please use the plan_intent tool to plan the search carefully.
-    Performs a deep web search based on the given query and returns Grok's answer directly.
+    Performs a web search based on the given query and returns Grok's answer directly.
+    Supports three search modes: fast (concise, quick), balanced (moderate depth, default), deep (thorough research).
 
     This tool extracts sources if provided by upstream, caches them, and returns:
     - session_id: string (When you feel confused or curious about the main content, use this field to invoke the get_sources tool to obtain the corresponding list of information sources)
@@ -142,8 +204,18 @@ async def web_search(
     extra_sources: Annotated[
         int,
         "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 3."] = 3,
-) -> dict:
+    mode: Annotated[
+        str,
+        "Search mode: 'fast' (concise, quick), 'balanced' (moderate depth, default), 'deep' (thorough research). "
+        "Use 'fast' for simple lookups, 'balanced' for general questions, 'deep' for complex research."] = "balanced",
+    ) -> dict:
     session_id = new_session_id()
+
+    # Check cache first
+    cached = await _RESULT_CACHE.get(query, platform, model, extra_sources, mode)
+    if cached is not None:
+        return cached
+
     try:
         api_url = config.grok_api_url
         api_key = config.grok_api_key
@@ -184,25 +256,45 @@ async def web_search(
             tavily_count = extra_sources
 
     # 并行执行搜索任务
-    async def _safe_grok() -> str:
+    async def _safe_grok() -> tuple[str, str | None]:
         try:
-            return await grok_provider.search(query, platform)
-        except Exception:
-            return ""
+            result = await asyncio.wait_for(
+                grok_provider.search(query, platform, mode=mode),
+                timeout=float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120")),
+            )
+            return result, None
+        except asyncio.TimeoutError:
+            return "", "grok_timeout"
+        except Exception as e:
+            return "", f"grok_error: {type(e).__name__}"
 
-    async def _safe_tavily() -> list[dict] | None:
+    async def _safe_tavily() -> tuple[list[dict] | None, str | None]:
         try:
             if tavily_count:
-                return await _call_tavily_search(query, tavily_count)
-        except Exception:
-            return None
+                result = await asyncio.wait_for(
+                    _call_tavily_search(query, tavily_count),
+                    timeout=float(os.getenv("WEB_SEARCH_TAVILY_TIMEOUT_SECONDS", "30")),
+                )
+                return result, None
+        except asyncio.TimeoutError:
+            return None, "tavily_timeout"
+        except Exception as e:
+            return None, f"tavily_error: {type(e).__name__}"
+        return None, None
 
-    async def _safe_firecrawl() -> list[dict] | None:
+    async def _safe_firecrawl() -> tuple[list[dict] | None, str | None]:
         try:
             if firecrawl_count:
-                return await _call_firecrawl_search(query, firecrawl_count)
-        except Exception:
-            return None
+                result = await asyncio.wait_for(
+                    _call_firecrawl_search(query, firecrawl_count),
+                    timeout=float(os.getenv("WEB_SEARCH_FIRECRAWL_TIMEOUT_SECONDS", "30")),
+                )
+                return result, None
+        except asyncio.TimeoutError:
+            return None, "firecrawl_timeout"
+        except Exception as e:
+            return None, f"firecrawl_error: {type(e).__name__}"
+        return None, None
 
     coros: list = [_safe_grok()]
     if tavily_count > 0:
@@ -210,42 +302,29 @@ async def web_search(
     if firecrawl_count > 0:
         coros.append(_safe_firecrawl())
 
-    search_timeout_seconds = float(
-        os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "180"))
-    try:
-        gathered = await asyncio.wait_for(
-            asyncio.gather(*coros),
-            timeout=max(5.0, search_timeout_seconds),
-        )
-    except asyncio.TimeoutError:
-        await _SOURCES_CACHE.set(session_id, [])
-        return {
-            "session_id":
-            session_id,
-            "content": ("搜索超时：上游搜索服务响应过慢。"
-                        "请稍后重试，或切换更快模型（如 grok-4-fast），"
-                        "也可缩小查询范围后重试。"),
-            "sources_count":
-            0,
-            "error":
-            "web_search_timeout",
-        }
+    # Each sub-task has its own independent timeout, so a single slow task
+    # no longer cancels others. Use asyncio.gather directly.
+    gathered = await asyncio.gather(*coros)
 
-    grok_result: str = gathered[0] or ""
+    grok_result, grok_error = gathered[0] or ("", None)
     tavily_results: list[dict] | None = None
     firecrawl_results: list[dict] | None = None
+    tavily_error: str | None = None
+    firecrawl_error: str | None = None
     idx = 1
     if tavily_count > 0:
-        tavily_results = gathered[idx]
+        tavily_results, tavily_error = gathered[idx]
         idx += 1
     if firecrawl_count > 0:
-        firecrawl_results = gathered[idx]
+        firecrawl_results, firecrawl_error = gathered[idx]
 
     answer, grok_sources = split_answer_and_sources(grok_result)
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
     all_sources = merge_sources(grok_sources, extra)
 
     if not answer.strip() and not all_sources:
+        # Build a detailed error list for debugging.
+        errors = [e for e in [grok_error, tavily_error, firecrawl_error] if e]
         await _SOURCES_CACHE.set(session_id, [])
         return {
             "session_id":
@@ -255,15 +334,20 @@ async def web_search(
             "sources_count":
             0,
             "error":
-            "web_search_empty",
+            "web_search_empty" if not errors else "; ".join(errors),
+            "errors":
+            errors,
         }
 
     await _SOURCES_CACHE.set(session_id, all_sources)
-    return {
+    result = {
         "session_id": session_id,
         "content": answer,
         "sources_count": len(all_sources)
     }
+    # Cache the result for subsequent identical queries
+    await _RESULT_CACHE.set(query, platform, model, extra_sources, mode, result)
+    return result
 
 
 @mcp.tool(
