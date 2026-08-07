@@ -191,21 +191,30 @@ async def web_search(
     # 并行执行搜索任务
     async def _safe_grok() -> str:
         try:
-            return await grok_provider.search(query, platform, mode=mode)
+            return await asyncio.wait_for(
+                grok_provider.search(query, platform, mode=mode),
+                timeout=float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120")),
+            )
         except Exception:
             return ""
 
     async def _safe_tavily() -> list[dict] | None:
         try:
             if tavily_count:
-                return await _call_tavily_search(query, tavily_count)
+                return await asyncio.wait_for(
+                    _call_tavily_search(query, tavily_count),
+                    timeout=float(os.getenv("WEB_SEARCH_TAVILY_TIMEOUT_SECONDS", "30")),
+                )
         except Exception:
             return None
 
     async def _safe_firecrawl() -> list[dict] | None:
         try:
             if firecrawl_count:
-                return await _call_firecrawl_search(query, firecrawl_count)
+                return await asyncio.wait_for(
+                    _call_firecrawl_search(query, firecrawl_count),
+                    timeout=float(os.getenv("WEB_SEARCH_FIRECRAWL_TIMEOUT_SECONDS", "30")),
+                )
         except Exception:
             return None
 
@@ -215,26 +224,9 @@ async def web_search(
     if firecrawl_count > 0:
         coros.append(_safe_firecrawl())
 
-    search_timeout_seconds = float(
-        os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "180"))
-    try:
-        gathered = await asyncio.wait_for(
-            asyncio.gather(*coros),
-            timeout=max(5.0, search_timeout_seconds),
-        )
-    except asyncio.TimeoutError:
-        await _SOURCES_CACHE.set(session_id, [])
-        return {
-            "session_id":
-            session_id,
-            "content": ("搜索超时：上游搜索服务响应过慢。"
-                        "请稍后重试，或切换更快模型（如 grok-4-fast），"
-                        "也可缩小查询范围后重试。"),
-            "sources_count":
-            0,
-            "error":
-            "web_search_timeout",
-        }
+    # Each sub-task has its own independent timeout, so a single slow task
+    # no longer cancels others. Use asyncio.gather directly.
+    gathered = await asyncio.gather(*coros)
 
     grok_result: str = gathered[0] or ""
     tavily_results: list[dict] | None = None
