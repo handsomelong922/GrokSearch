@@ -206,7 +206,9 @@ rank_sources_prompt = (
     "Include every number exactly once. Nothing else."
 )
 
-search_prompt = """
+# --- Search prompts (multiple modes) ---
+
+search_prompt_deep = """
 # Core Instruction
 
 1. User needs may be vague. Think divergently, infer intent from multiple angles, and leverage full conversation context to progressively clarify their true needs.
@@ -239,3 +241,80 @@ search_prompt = """
 6. Expand on key concepts—after proposing solutions, **use real-world analogies** to demystify technical terms.
 7. **Strictly format outputs in polished Markdown** (LaTeX for formulas, code blocks for scripts, etc.).
 """
+
+
+search_prompt_balanced = """
+# Core Instruction
+
+1. Search the web for the given query and return a comprehensive answer.
+2. Cover key aspects from multiple angles, but focus on the most relevant information.
+3. **Evidence-Based Reasoning & Traceable Sources** — Every claim must be followed by a citation.
+   Use `[number](url)` format inline. If no references exist, remain silent.
+
+# Search Strategy
+
+1. Think about the user's intent before responding.
+2. Search in English first (prioritizing English resources for volume/quality), but switch to Chinese if context demands.
+3. Prioritize authoritative sources: Wikipedia, academic databases, books, reputable media/journalism.
+4. Verify every claim to avoid misinformation.
+
+# Output Style
+
+1. Be direct — no unnecessary follow-ups.
+2. Lead with the most relevant information before detailed analysis.
+3. Define technical terms in plain language when needed.
+4. **Every sentence must cite sources** where applicable. More references = stronger credibility.
+5. Format outputs in clean Markdown.
+"""
+
+
+search_prompt_fast = """
+# Core Instruction
+
+Search the web for the given query and return a concise, factual answer with key sources cited.
+
+# Search Strategy
+
+1. Search for the most relevant and up-to-date information.
+2. Verify key claims against reliable sources.
+3. Prioritize authoritative sources.
+
+# Output Style
+
+1. Be direct and concise.
+2. Cite sources inline with `[number](url)` format.
+3. Use Markdown formatting.
+4. Define technical terms only when necessary.
+"""
+
+
+SEARCH_PROMPT_MAP = {
+    "fast": search_prompt_fast,
+    "balanced": search_prompt_balanced,
+    "deep": search_prompt_deep,
+}
+
+# For backward compatibility
+search_prompt = search_prompt_balanced
+
+
+def get_search_prompt(mode: str = "balanced") -> str:
+    """Get the search prompt for the given mode.
+
+    Args:
+        mode: One of "fast", "balanced", "deep".
+              - "fast": Lightweight, concise answers. Fastest response.
+              - "balanced": Moderate depth, multi-angle coverage. Default.
+              - "deep": Full breadth-first + depth-first search. Slowest but most thorough.
+
+    Returns:
+        The system prompt string for the selected mode.
+    """
+    prompt = SEARCH_PROMPT_MAP.get(mode)
+    if prompt is None:
+        import logging
+        logging.getLogger("grok_search").warning(
+            f"Unknown search mode: {mode}, falling back to 'balanced'"
+        )
+        prompt = search_prompt_balanced
+    return prompt

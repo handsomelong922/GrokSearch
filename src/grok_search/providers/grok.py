@@ -8,7 +8,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from tenacity.wait import wait_base
 from zoneinfo import ZoneInfo
 from .base import BaseSearchProvider, SearchResult
-from ..utils import search_prompt, fetch_prompt, url_describe_prompt, rank_sources_prompt
+from ..utils import get_search_prompt, search_prompt, fetch_prompt, url_describe_prompt, rank_sources_prompt
 from ..logger import log_info
 from ..config import config
 
@@ -126,7 +126,7 @@ class GrokSearchProvider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "Grok"
 
-    async def search(self, query: str, platform: str = "", min_results: int = 3, max_results: int = 10, ctx=None) -> List[SearchResult]:
+    async def search(self, query: str, platform: str = "", mode: str = "balanced", min_results: int = 3, max_results: int = 10, ctx=None) -> List[SearchResult]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -138,12 +138,14 @@ class GrokSearchProvider(BaseSearchProvider):
 
         time_context = get_local_time_info() + "\n"
 
+        system_prompt = get_search_prompt(mode)
+
         payload = {
             "model": self.model,
             "messages": [
                 {
                     "role": "system",
-                    "content": search_prompt,
+                    "content": system_prompt,
                 },
                 {"role": "user", "content": time_context + query + platform_prompt},
             ],
@@ -151,6 +153,8 @@ class GrokSearchProvider(BaseSearchProvider):
         }
 
         await log_info(ctx, f"platform_prompt: { query + platform_prompt}", config.debug_enabled)
+        if mode != "balanced":
+            await log_info(ctx, f"search_mode: {mode}", config.debug_enabled)
 
         return await self._execute_stream_with_retry(headers, payload, ctx)
 

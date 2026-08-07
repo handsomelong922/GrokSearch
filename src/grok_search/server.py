@@ -118,7 +118,8 @@ def _extra_results_to_sources(
     output_schema=None,
     description="""
     Before using this tool, please use the plan_intent tool to plan the search carefully.
-    Performs a deep web search based on the given query and returns Grok's answer directly.
+    Performs a web search based on the given query and returns Grok's answer directly.
+    Supports three search modes: fast (concise, quick), balanced (moderate depth, default), deep (thorough research).
 
     This tool extracts sources if provided by upstream, caches them, and returns:
     - session_id: string (When you feel confused or curious about the main content, use this field to invoke the get_sources tool to obtain the corresponding list of information sources)
@@ -142,6 +143,10 @@ async def web_search(
     extra_sources: Annotated[
         int,
         "Number of additional reference results from Tavily/Firecrawl. Set 0 to disable. Default 3."] = 3,
+    mode: Annotated[
+        str,
+        "Search mode: 'fast' (concise, quick), 'balanced' (moderate depth, default), 'deep' (thorough research). "
+        "Use 'fast' for simple lookups, 'balanced' for general questions, 'deep' for complex research."] = "balanced",
 ) -> dict:
     session_id = new_session_id()
     try:
@@ -186,7 +191,7 @@ async def web_search(
     # 并行执行搜索任务
     async def _safe_grok() -> str:
         try:
-            return await grok_provider.search(query, platform)
+            return await grok_provider.search(query, platform, mode=mode)
         except Exception:
             return ""
 
