@@ -257,7 +257,7 @@ async def web_search(
 
     # 并行执行搜索任务
     async def _safe_providers() -> SearchBatchResult:
-        return await router.run_search(query, platform, mode=mode, model_override=model_override, ctx=ctx)
+        return await router.run_search(query, platform, mode=mode, model_override=model_override)
 
     async def _safe_tavily() -> tuple[list[dict] | None, str | None]:
         try:
