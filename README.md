@@ -137,6 +137,53 @@ claude mcp add-json grok-search --scope user '{
 | `GROK_RETRY_MAX_ATTEMPTS` | ❌ | `3` | 最大重试次数 |
 | `GROK_RETRY_MULTIPLIER` | ❌ | `1` | 重试退避乘数 |
 | `GROK_RETRY_MAX_WAIT` | ❌ | `10` | 重试最大等待秒数 |
+| `GEMINI_API_URL` | ❌ | - | Gemini API 地址（OpenAI 兼容格式），如 `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `GEMINI_API_KEY` | ❌ | - | Gemini API 密钥（配置后同时启用 Grok + Gemini 并行搜索） |
+| `GEMINI_MODEL` | ❌ | `gemini-2.0-flash` | Gemini 默认模型 |
+| `SEARCH_PROVIDER_STRATEGY` | ❌ | `parallel` | 搜索策略：`parallel`（并行）、`fallback`（降级）、`primary`（仅主 Provider） |
+
+
+### 多 Provider 并行搜索
+
+从 v2.0.0 开始，Grok Search 支持同时配置多个搜索 Provider。**默认即启用并行模式**，无需额外配置。
+
+#### 配置方式
+
+在现有的 `GROK_*` 配置基础上，添加 `GEMINI_*` 环境变量即可启用双 Provider 并行搜索：
+
+```bash
+claude mcp add-json grok-search --scope user '{
+  "type": "stdio",
+  "command": "uvx",
+  "args": ["--from", "git+https://github.com/GuDaStudio/GrokSearch", "grok-search"],
+  "env": {
+    "GROK_API_URL": "https://your-grok-endpoint/v1",
+    "GROK_API_KEY": "your-grok-key",
+    "GEMINI_API_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "GEMINI_API_KEY": "your-gemini-key",
+    "GEMINI_MODEL": "gemini-2.0-flash",
+    "SEARCH_PROVIDER_STRATEGY": "parallel",
+    "TAVILY_API_KEY": "tvly-your-tavily-key"
+  }
+}'
+```
+
+#### 并行搜索的工作方式
+
+1. **并行执行**：`web_search` 同时调用 Grok 和 Gemini 进行搜索
+2. **择优取答案**：两个 Provider 均成功时，选择内容更详细（长度更长）的回答作为主答案
+3. **信源合并**：两个 Provider 搜索到的信源自动去重合并，通过 `get_sources` 返回
+4. **自动降级**：其中一个 Provider 失败时，自动使用另一个 Provider 的结果，不中断服务
+
+#### 路由策略
+
+| 策略 | 行为 |
+|------|------|
+| `parallel`（默认） | 并行调用所有已配置 Provider，合并结果 |
+| `fallback` | 按顺序尝试，失败时切换到下一个 Provider |
+| `primary` | 仅使用主 Provider（Grok），与单 Provider 行为一致 |
+
+> 注意：Gemini 的 API URL 必须为 OpenAI 兼容格式。如果仅配置 `GROK_*` 而不配置 `GEMINI_*`，系统行为与改动前完全一致。
 
 
 ### 验证安装
