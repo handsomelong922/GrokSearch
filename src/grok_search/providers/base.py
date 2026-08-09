@@ -28,9 +28,10 @@ class SearchResult:
 
 
 class BaseSearchProvider(ABC):
-    def __init__(self, api_url: str, api_key: str):
+    def __init__(self, api_url: str, api_key: str, provider_name: str = "OpenAICompatible"):
         self.api_url = api_url
         self.api_key = api_key
+        self._provider_name = provider_name
 
     @abstractmethod
     async def search(self, query: str, max_results: int = 5) -> List[SearchResult]:
@@ -38,4 +39,4 @@ class BaseSearchProvider(ABC):
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        pass
+        return self._provider_name

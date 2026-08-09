@@ -15,13 +15,13 @@ from pydantic import Field
 
 # 尝试使用绝对导入（支持 mcp run）
 try:
-    from grok_search.providers.grok import GrokSearchProvider
+    from grok_search.providers.router import SearchBatchResult, get_router
     from grok_search.logger import log_info
     from grok_search.config import config
     from grok_search.sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
     from grok_search.planning import engine as planning_engine, _split_csv
 except ImportError:
-    from .providers.grok import GrokSearchProvider
+    from .providers.router import SearchBatchResult, get_router
     from .logger import log_info
     from .config import config
     from .sources import SourcesCache, merge_sources, new_session_id, split_answer_and_sources
@@ -216,20 +216,22 @@ async def web_search(
     if cached is not None:
         return cached
 
-    try:
-        api_url = config.grok_api_url
-        api_key = config.grok_api_key
-    except ValueError as e:
+    # Initialize router and validate configuration
+    router = await get_router()
+    providers = router.get_providers()
+    if not providers:
         await _SOURCES_CACHE.set(session_id, [])
         return {
             "session_id": session_id,
-            "content": f"配置错误: {str(e)}",
+            "content": "配置错误: 没有可用的搜索 Provider。请检查 GROK_API_URL 和 GROK_API_KEY 配置。",
             "sources_count": 0
         }
 
-    effective_model = config.grok_model
+    # Validate model override (applies to primary Grok provider only)
+    model_override = ""
     if model:
-        available = await _get_available_models_cached(api_url, api_key)
+        primary = providers[0]
+        available = await _get_available_models_cached(primary.api_url, primary.api_key)
         if available and model not in available:
             await _SOURCES_CACHE.set(session_id, [])
             return {
@@ -237,9 +239,7 @@ async def web_search(
                 "content": f"无效模型: {model}",
                 "sources_count": 0
             }
-        effective_model = model
-
-    grok_provider = GrokSearchProvider(api_url, api_key, effective_model)
+        model_override = model
 
     # 计算额外信源配额
     has_tavily = bool(config.tavily_api_key)
@@ -256,17 +256,8 @@ async def web_search(
             tavily_count = extra_sources
 
     # 并行执行搜索任务
-    async def _safe_grok() -> tuple[str, str | None]:
-        try:
-            result = await asyncio.wait_for(
-                grok_provider.search(query, platform, mode=mode),
-                timeout=float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120")),
-            )
-            return result, None
-        except asyncio.TimeoutError:
-            return "", "grok_timeout"
-        except Exception as e:
-            return "", f"grok_error: {type(e).__name__}"
+    async def _safe_providers() -> SearchBatchResult:
+        return await router.run_search(query, platform, mode=mode, model_override=model_override, ctx=ctx)
 
     async def _safe_tavily() -> tuple[list[dict] | None, str | None]:
         try:
@@ -296,7 +287,7 @@ async def web_search(
             return None, f"firecrawl_error: {type(e).__name__}"
         return None, None
 
-    coros: list = [_safe_grok()]
+    coros: list = [_safe_providers()]
     if tavily_count > 0:
         coros.append(_safe_tavily())
     if firecrawl_count > 0:
@@ -306,7 +297,7 @@ async def web_search(
     # no longer cancels others. Use asyncio.gather directly.
     gathered = await asyncio.gather(*coros)
 
-    grok_result, grok_error = gathered[0] or ("", None)
+    batch_result: SearchBatchResult = gathered[0]
     tavily_results: list[dict] | None = None
     firecrawl_results: list[dict] | None = None
     tavily_error: str | None = None
@@ -318,19 +309,20 @@ async def web_search(
     if firecrawl_count > 0:
         firecrawl_results, firecrawl_error = gathered[idx]
 
-    answer, grok_sources = split_answer_and_sources(grok_result)
+    answer = batch_result.primary_content
+    provider_sources = batch_result.all_sources
     extra = _extra_results_to_sources(tavily_results, firecrawl_results)
-    all_sources = merge_sources(grok_sources, extra)
+    all_sources = merge_sources(provider_sources, extra)
 
     if not answer.strip() and not all_sources:
         # Build a detailed error list for debugging.
-        errors = [e for e in [grok_error, tavily_error, firecrawl_error] if e]
+        errors = batch_result.errors + [e for e in [tavily_error, firecrawl_error] if e]
         await _SOURCES_CACHE.set(session_id, [])
         return {
             "session_id":
             session_id,
-            "content": ("搜索未返回有效结果。请检查 GROK_API_URL/GROK_API_KEY，"
-                        "并确认上游接口可访问后重试。"),
+            "content": ("搜索未返回有效结果。请检查 Provider 配置（GROK_API_URL/GROK_API_KEY"
+                        " 或 GEMINI_API_URL/GEMINI_API_KEY），并确认上游接口可访问后重试。"),
             "sources_count":
             0,
             "error":
@@ -694,73 +686,77 @@ async def get_config_info() -> str:
     config_info = config.get_config_info()
 
     # 添加连接测试
-    test_result = {"status": "未测试", "message": "", "response_time_ms": 0}
+    # Test all configured providers
+    provider_tests = []
+    import time
+    for provider_cfg in config.get_search_providers():
+        test_result = {"provider": provider_cfg["name"], "status": "未测试", "message": "", "response_time_ms": 0}
+        api_url = provider_cfg["api_url"]
+        api_key = provider_cfg["api_key"]
 
-    try:
-        api_url = config.grok_api_url
-        api_key = config.grok_api_key
+        try:
+            # 构建 /models 端点 URL
+            models_url = f"{api_url.rstrip('/')}/models"
 
-        # 构建 /models 端点 URL
-        models_url = f"{api_url.rstrip('/')}/models"
+            # 发送测试请求
+            start_time = time.time()
 
-        # 发送测试请求
-        import time
-        start_time = time.time()
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(models_url,
+                                            headers={
+                                                "Authorization":
+                                                f"Bearer {api_key}",
+                                                "Content-Type": "application/json"
+                                            })
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(models_url,
-                                        headers={
-                                            "Authorization":
-                                            f"Bearer {api_key}",
-                                            "Content-Type": "application/json"
-                                        })
+                response_time = (time.time() - start_time) * 1000  # 转换为毫秒
 
-            response_time = (time.time() - start_time) * 1000  # 转换为毫秒
+                if response.status_code == 200:
+                    test_result["status"] = "✅ 连接成功"
+                    test_result[
+                        "message"] = f"成功获取模型列表 (HTTP {response.status_code})"
+                    test_result["response_time_ms"] = round(response_time, 2)
 
-            if response.status_code == 200:
-                test_result["status"] = "✅ 连接成功"
-                test_result[
-                    "message"] = f"成功获取模型列表 (HTTP {response.status_code})"
-                test_result["response_time_ms"] = round(response_time, 2)
+                    # 尝试解析返回的模型列表
+                    try:
+                        models_data = response.json()
+                        if "data" in models_data and isinstance(
+                                models_data["data"], list):
+                            model_count = len(models_data["data"])
+                            test_result["message"] += f"，共 {model_count} 个模型"
 
-                # 尝试解析返回的模型列表
-                try:
-                    models_data = response.json()
-                    if "data" in models_data and isinstance(
-                            models_data["data"], list):
-                        model_count = len(models_data["data"])
-                        test_result["message"] += f"，共 {model_count} 个模型"
+                            # 提取所有模型的 ID/名称
+                            model_names = []
+                            for model in models_data["data"]:
+                                if isinstance(model, dict) and "id" in model:
+                                    model_names.append(model["id"])
 
-                        # 提取所有模型的 ID/名称
-                        model_names = []
-                        for model in models_data["data"]:
-                            if isinstance(model, dict) and "id" in model:
-                                model_names.append(model["id"])
+                            if model_names:
+                                test_result["available_models"] = model_names
+                    except:
+                        pass
+                else:
+                    test_result["status"] = "⚠️ 连接异常"
+                    test_result[
+                        "message"] = f"HTTP {response.status_code}: {response.text[:100]}"
+                    test_result["response_time_ms"] = round(response_time, 2)
 
-                        if model_names:
-                            test_result["available_models"] = model_names
-                except:
-                    pass
-            else:
-                test_result["status"] = "⚠️ 连接异常"
-                test_result[
-                    "message"] = f"HTTP {response.status_code}: {response.text[:100]}"
-                test_result["response_time_ms"] = round(response_time, 2)
+        except httpx.TimeoutException:
+            test_result["status"] = "❌ 连接超时"
+            test_result["message"] = "请求超时（10秒），请检查网络连接或 API URL"
+        except httpx.RequestError as e:
+            test_result["status"] = "❌ 连接失败"
+            test_result["message"] = f"网络错误: {str(e)}"
+        except ValueError as e:
+            test_result["status"] = "❌ 配置错误"
+            test_result["message"] = str(e)
+        except Exception as e:
+            test_result["status"] = "❌ 测试失败"
+            test_result["message"] = f"未知错误: {str(e)}"
 
-    except httpx.TimeoutException:
-        test_result["status"] = "❌ 连接超时"
-        test_result["message"] = "请求超时（10秒），请检查网络连接或 API URL"
-    except httpx.RequestError as e:
-        test_result["status"] = "❌ 连接失败"
-        test_result["message"] = f"网络错误: {str(e)}"
-    except ValueError as e:
-        test_result["status"] = "❌ 配置错误"
-        test_result["message"] = str(e)
-    except Exception as e:
-        test_result["status"] = "❌ 测试失败"
-        test_result["message"] = f"未知错误: {str(e)}"
+        provider_tests.append(test_result)
 
-    config_info["connection_test"] = test_result
+    config_info["connection_test"] = provider_tests
 
     return json.dumps(config_info, ensure_ascii=False, indent=2)
 

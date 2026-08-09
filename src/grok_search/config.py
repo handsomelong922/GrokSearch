@@ -12,6 +12,8 @@ class Config:
         '"env":{"GROK_API_URL":"your-api-url","GROK_API_KEY":"your-api-key"}}\''
     )
     _DEFAULT_MODEL = "grok-4-fast"
+    _DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+    _DEFAULT_STRATEGY = "parallel"
 
     def __new__(cls):
         if cls._instance is None:
@@ -120,6 +122,66 @@ class Config:
     def firecrawl_api_key(self) -> str | None:
         return os.getenv("FIRECRAWL_API_KEY")
 
+    # --- Gemini Provider Config ---
+
+    @property
+    def gemini_api_url(self) -> str | None:
+        return os.getenv("GEMINI_API_URL")
+
+    @property
+    def gemini_api_key(self) -> str | None:
+        return os.getenv("GEMINI_API_KEY")
+
+    @property
+    def gemini_model(self) -> str:
+        return os.getenv("GEMINI_MODEL") or self._DEFAULT_GEMINI_MODEL
+
+    @property
+    def gemini_enabled(self) -> bool:
+        return bool(self.gemini_api_url and self.gemini_api_key)
+
+    # --- Provider Strategy ---
+
+    @property
+    def search_provider_strategy(self) -> str:
+        """Returns the search provider strategy: parallel | fallback | primary"""
+        return (os.getenv("SEARCH_PROVIDER_STRATEGY") or self._DEFAULT_STRATEGY).strip().lower()
+
+    # --- Provider Registry ---
+
+    def get_search_providers(self) -> list[dict]:
+        """Return list of provider config dicts for all configured providers."""
+        providers = []
+
+        # Primary: Grok (always required)
+        try:
+            providers.append({
+                "name": "Grok",
+                "api_url": self.grok_api_url,
+                "api_key": self.grok_api_key,
+                "model": self.grok_model,
+                "enabled": True,
+            })
+        except ValueError:
+            pass
+
+        # Secondary: Gemini (optional)
+        if self.gemini_enabled:
+            providers.append({
+                "name": "Gemini",
+                "api_url": self.gemini_api_url,
+                "api_key": self.gemini_api_key,
+                "model": self.gemini_model,
+                "enabled": True,
+            })
+
+        return providers
+
+    @property
+    def has_multiple_providers(self) -> bool:
+        """Whether more than one search provider is configured."""
+        return len(self.get_search_providers()) > 1
+
     @property
     def log_level(self) -> str:
         return os.getenv("GROK_LOG_LEVEL", "INFO").upper()
@@ -210,6 +272,26 @@ class Config:
             ) if self.tavily_api_keys else "未配置",
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
+            "GEMINI_API_URL": self.gemini_api_url or "未配置",
+            "GEMINI_API_KEY": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置",
+            "GEMINI_MODEL": self.gemini_model if self.gemini_enabled else "未配置",
+            "SEARCH_PROVIDER_STRATEGY": self.search_provider_strategy,
+            "providers": [
+                {
+                    "name": "Grok",
+                    "status": "✅ 已配置" if api_url != "未配置" else "❌ 未配置",
+                    "api_url": api_url,
+                    "api_key": api_key_masked,
+                    "model": self.grok_model,
+                },
+                {
+                    "name": "Gemini",
+                    "status": "✅ 已配置" if self.gemini_enabled else "ℹ️ 未配置（可选）",
+                    "api_url": self.gemini_api_url or "未配置",
+                    "api_key": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置",
+                    "model": self.gemini_model if self.gemini_enabled else "未配置",
+                },
+            ],
             "config_status": config_status
         }
 
