@@ -33,6 +33,15 @@ class SearchBatchResult:
         self.primary_content: str = ""
         self.all_sources: list[dict] = []
         self.errors: list[str] = []
+        self.providers_used: list[str] = []
+
+    def get_provider_names(self) -> list[str]:
+        """Return names of providers that produced content or errors."""
+        names = set()
+        for answer in self.answers:
+            if answer.provider_name:
+                names.add(answer.provider_name)
+        return sorted(names)
 
 
 class ProviderRouter:
@@ -161,6 +170,7 @@ class ProviderRouter:
         # Parse each answer into content + sources
         all_contents: list[tuple[str, str, list[dict]]] = []  # (name, content, sources)
         all_sources_lists: list[list[dict]] = []
+        result.providers_used = [a.provider_name for a in answers if a.provider_name]
 
         for answer in answers:
             if answer.error:
@@ -203,6 +213,7 @@ class ProviderRouter:
 
         for provider in providers:
             name = provider.get_provider_name()
+            result.providers_used.append(name)
             try:
                 content = await asyncio.wait_for(
                     provider.search(query, platform, mode=mode),
@@ -242,6 +253,7 @@ class ProviderRouter:
 
         provider = providers[0]
         name = provider.get_provider_name()
+        result.providers_used.append(name)
         timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120"))
 
         try:

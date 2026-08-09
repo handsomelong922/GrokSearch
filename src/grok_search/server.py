@@ -186,6 +186,7 @@ def _extra_results_to_sources(
     - session_id: string (When you feel confused or curious about the main content, use this field to invoke the get_sources tool to obtain the corresponding list of information sources)
     - content: string (answer only)
     - sources_count: int
+    - providers_used: list of strings (e.g., ["Grok", "Gemini"])
     """,
     meta={
         "version": "2.0.0",
@@ -335,7 +336,8 @@ async def web_search(
     result = {
         "session_id": session_id,
         "content": answer,
-        "sources_count": len(all_sources)
+        "sources_count": len(all_sources),
+        "providers_used": batch_result.providers_used,
     }
     # Cache the result for subsequent identical queries
     await _RESULT_CACHE.set(query, platform, model, extra_sources, mode, result)
