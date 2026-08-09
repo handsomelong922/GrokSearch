@@ -141,6 +141,7 @@ claude mcp add-json grok-search --scope user '{
 | `GEMINI_API_KEY` | ❌ | - | Gemini API 密钥（配置后同时启用 Grok + Gemini 并行搜索） |
 | `GEMINI_MODEL` | ❌ | `gemini-2.0-flash` | Gemini 默认模型 |
 | `SEARCH_PROVIDER_STRATEGY` | ❌ | `parallel` | 搜索策略：`parallel`（并行）、`fallback`（降级）、`primary`（仅主 Provider） |
+| `SEARCH_PROVIDER_PRIMARY` | ❌ | `grok` | 主 Provider：`grok` 或 `gemini`，决定主答案来源 |
 
 
 ### 多 Provider 并行搜索
@@ -171,9 +172,10 @@ claude mcp add-json grok-search --scope user '{
 #### 并行搜索的工作方式
 
 1. **并行执行**：`web_search` 同时调用 Grok 和 Gemini 进行搜索
-2. **择优取答案**：两个 Provider 均成功时，选择内容更详细（长度更长）的回答作为主答案
-3. **信源合并**：两个 Provider 搜索到的信源自动去重合并，通过 `get_sources` 返回
-4. **自动降级**：其中一个 Provider 失败时，自动使用另一个 Provider 的结果，不中断服务
+2. **主答案固定**：主 Provider（默认 Grok）的回答作为主答案，可通过 `SEARCH_PROVIDER_PRIMARY` 切换
+3. **增量补充**：副 Provider（默认 Gemini）的回答做语义去重，只提取主答案未包含的信息，通过 `supplementary` 字段返回
+4. **信源合并**：两个 Provider 搜索到的信源自动去重合并，通过 `get_sources` 返回
+5. **自动降级**：其中一个 Provider 失败时，自动使用另一个 Provider 的结果，不中断服务
 
 #### 路由策略
 

@@ -16,6 +16,7 @@ from .openai_compatible import OpenAICompatibleSearchProvider
 from ..config import config
 from ..sources import merge_sources, split_answer_and_sources
 from ..logger import log_info
+from ..dedup import extract_supplementary
 
 
 class ProviderAnswer:
@@ -34,6 +35,7 @@ class SearchBatchResult:
         self.all_sources: list[dict] = []
         self.errors: list[str] = []
         self.providers_used: list[str] = []
+        self.supplementary: str = ""
 
     def get_provider_names(self) -> list[str]:
         """Return names of providers that produced content or errors."""
@@ -138,10 +140,12 @@ class ProviderRouter:
     ) -> SearchBatchResult:
         """Run all providers in parallel, merge results.
 
-        Merge strategy:
-        1. Parse each provider's result into answer + sources
-        2. Merge sources (deduplicate by URL)
-        3. Select primary answer: prefer the longer (more detailed) content
+        Merge strategy (Plan B):
+        1. Run all providers in parallel
+        2. Identify primary provider (configurable, default: Grok)
+        3. Primary provider answer goes to `content`
+        4. Secondary provider: extract supplementary (sentences not in primary)
+        5. Merge sources from both (deduplicate by URL)
         """
         result = SearchBatchResult()
         if not providers:
@@ -149,6 +153,7 @@ class ProviderRouter:
             return result
 
         timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120"))
+        primary_name = config.search_provider_primary.capitalize()
 
         async def _safe_call(provider: BaseSearchProvider) -> ProviderAnswer:
             name = provider.get_provider_name()
@@ -166,33 +171,43 @@ class ProviderRouter:
         # Run all providers concurrently
         answers = await asyncio.gather(*[_safe_call(p) for p in providers])
         result.answers = answers
+        result.providers_used = [a.provider_name for a in answers if a.provider_name]
 
         # Parse each answer into content + sources
-        all_contents: list[tuple[str, str, list[dict]]] = []  # (name, content, sources)
+        all_contents: dict[str, tuple[str, str, list[dict]]] = {}
         all_sources_lists: list[list[dict]] = []
-        result.providers_used = [a.provider_name for a in answers if a.provider_name]
 
         for answer in answers:
             if answer.error:
                 result.errors.append(answer.error)
             else:
                 content, sources = split_answer_and_sources(answer.content)
-                all_contents.append((answer.provider_name, content, sources))
+                all_contents[answer.provider_name] = (answer.provider_name, content, sources)
                 all_sources_lists.append(sources)
 
         # Merge sources (deduplicate by URL)
         result.all_sources = merge_sources(*all_sources_lists) if all_sources_lists else []
 
-        # Select primary answer: prefer longer content
-        if all_contents:
-            # Sort by content length descending, pick the longest
-            all_contents.sort(key=lambda x: len(x[1]), reverse=True)
-            result.primary_content = all_contents[0][1]
-        else:
-            result.primary_content = ""
+        # Plan B: primary provider determines content, secondary provides supplementary
+        primary_content = ""
+        secondary_content = ""
+        for name, content, _ in all_contents.values():
+            if name.lower() == primary_name.lower():
+                primary_content = content
+            else:
+                secondary_content = content
+
+        result.primary_content = primary_content or secondary_content
+
+        # Extract supplementary content if both providers have content
+        if primary_content and secondary_content:
+            supp = extract_supplementary(primary_content, secondary_content)
+            if supp:
+                result.supplementary = supp
 
         await log_info(ctx, f"ProviderRouter: parallel run completed with {len(providers)} providers, "
-                       f"selected primary from {all_contents[0][0] if all_contents else 'none'}, "
+                       f"primary={primary_name}, "
+                       f"supplementary={len(result.supplementary)} chars, "
                        f"merged {len(result.all_sources)} sources, "
                        f"errors: {result.errors}",
                        config.debug_enabled)

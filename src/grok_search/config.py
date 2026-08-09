@@ -14,6 +14,7 @@ class Config:
     _DEFAULT_MODEL = "grok-4-fast"
     _DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
     _DEFAULT_STRATEGY = "parallel"
+    _DEFAULT_PRIMARY = "grok"
 
     def __new__(cls):
         if cls._instance is None:
@@ -147,6 +148,11 @@ class Config:
         """Returns the search provider strategy: parallel | fallback | primary"""
         return (os.getenv("SEARCH_PROVIDER_STRATEGY") or self._DEFAULT_STRATEGY).strip().lower()
 
+    @property
+    def search_provider_primary(self) -> str:
+        """Returns the primary provider name for content selection: grok | gemini"""
+        return (os.getenv("SEARCH_PROVIDER_PRIMARY") or self._DEFAULT_PRIMARY).strip().lower()
+
     # --- Provider Registry ---
 
     def get_search_providers(self) -> list[dict]:
@@ -276,6 +282,7 @@ class Config:
             "GEMINI_API_KEY": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置",
             "GEMINI_MODEL": self.gemini_model if self.gemini_enabled else "未配置",
             "SEARCH_PROVIDER_STRATEGY": self.search_provider_strategy,
+            "SEARCH_PROVIDER_PRIMARY": self.search_provider_primary,
             "providers": [
                 {
                     "name": "Grok",

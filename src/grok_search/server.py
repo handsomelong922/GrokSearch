@@ -187,6 +187,7 @@ def _extra_results_to_sources(
     - content: string (answer only)
     - sources_count: int
     - providers_used: list of strings (e.g., ["Grok", "Gemini"])
+    - supplementary: string (optional, additional info from secondary provider)
     """,
     meta={
         "version": "2.0.0",
@@ -338,6 +339,7 @@ async def web_search(
         "content": answer,
         "sources_count": len(all_sources),
         "providers_used": batch_result.providers_used,
+        "supplementary": batch_result.supplementary,
     }
     # Cache the result for subsequent identical queries
     await _RESULT_CACHE.set(query, platform, model, extra_sources, mode, result)
