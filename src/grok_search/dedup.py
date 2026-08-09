@@ -113,7 +113,7 @@ def is_redundant(sentence: str, primary_sentences: List[str], token_cache: dict 
         combined_s = sent_tokens | sent_entities
         combined_p = p_tokens | p_entities
         sim = jaccard_similarity(combined_s, combined_p)
-        if sim > 0.5:
+        if sim > 0.65:
             return True
     return False
 
