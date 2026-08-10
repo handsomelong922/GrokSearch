@@ -251,7 +251,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             # 兼容 "data: {...}" 和 "data:{...}" 两种 SSE 格式
             if line.startswith("data:"):
                 if line in ("data: [DONE]", "data:[DONE]"):
-                    continue
+                    break
                 try:
                     # 去掉 "data:" 前缀，并去除可能的空格
                     json_str = line[5:].lstrip()
@@ -350,7 +350,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 continue
             raw = line[5:].lstrip() if line.startswith("data:") else line
             if raw == "[DONE]":
-                continue
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
@@ -380,6 +380,13 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 if completed_text:
                     fallback_text = completed_text
                 sources.extend(completed_sources)
+                break
+            elif current_event_type in {
+                "response.failed",
+                "response.incomplete",
+                "response.cancelled",
+            }:
+                break
             elif current_event_type == "response.output_item.done":
                 item = data.get("item")
                 if isinstance(item, dict):

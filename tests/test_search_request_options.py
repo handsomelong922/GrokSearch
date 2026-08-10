@@ -121,6 +121,31 @@ class _FakeStreamingResponse:
             yield line
 
 
+class _TerminalStreamingResponse:
+    def __init__(self, lines):
+        self.lines = lines
+
+    async def aiter_lines(self):
+        for line in self.lines:
+            yield line
+        raise AssertionError("parser consumed the stream after a terminal event")
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_parser_stops_at_done_marker():
+    provider = OpenAICompatibleSearchProvider(
+        api_url="https://example.test/v1",
+        api_key="test-key",
+        model="grok-test",
+    )
+    response = _TerminalStreamingResponse([
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data:[DONE]",
+    ])
+
+    assert await provider._parse_streaming_response(response) == "answer"
+
+
 @pytest.mark.asyncio
 async def test_responses_stream_parser_collects_text_and_annotations(monkeypatch):
     monkeypatch.delenv("OPENAI_API_FORMAT", raising=False)
@@ -140,6 +165,49 @@ async def test_responses_stream_parser_collects_text_and_annotations(monkeypatch
 
     result = await provider._parse_responses_streaming_response(response)
     assert result == "Hello world\n\nSources:\n- https://example.test/source"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_parser_stops_at_completed_and_preserves_payload():
+    provider = OpenAICompatibleSearchProvider(
+        api_url="https://example.test/v1",
+        api_key="test-key",
+        model="grok-test",
+    )
+    response = _TerminalStreamingResponse([
+        'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Completed answer","annotations":[{"type":"url_citation","url":"https://example.test/completed"}]}]}]}}',
+    ])
+
+    assert await provider._parse_responses_streaming_response(response) == (
+        "Completed answer\n\nSources:\n- https://example.test/completed"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_line",
+    [
+        "data: [DONE]",
+        'data: {"type":"response.failed"}',
+        'data: {"type":"response.incomplete"}',
+        'data: {"type":"response.cancelled"}',
+    ],
+)
+async def test_responses_stream_parser_stops_at_terminal_events(terminal_line):
+    provider = OpenAICompatibleSearchProvider(
+        api_url="https://example.test/v1",
+        api_key="test-key",
+        model="grok-test",
+    )
+    response = _TerminalStreamingResponse([
+        'data: {"type":"response.output_text.delta","delta":"partial"}',
+        'data: {"type":"response.output_text.annotation.added","annotation":{"url":"https://example.test/source"}}',
+        terminal_line,
+    ])
+
+    assert await provider._parse_responses_streaming_response(response) == (
+        "partial\n\nSources:\n- https://example.test/source"
+    )
 
 
 @pytest.mark.asyncio
