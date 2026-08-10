@@ -28,12 +28,92 @@ except ImportError:
     from .planning import engine as planning_engine, _split_csv
 
 import asyncio
+import httpx
 
 mcp = FastMCP("grok-search")
 
 _SOURCES_CACHE = SourcesCache(max_size=256)
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+
+_SUPPLEMENTAL_CLIENT: httpx.AsyncClient | None = None
+_SUPPLEMENTAL_CLIENT_LOCK = asyncio.Lock()
+_SUPPLEMENTAL_POOL_TIMEOUT_SECONDS = 5.0
+
+
+def _supplemental_request_timeout(seconds: float) -> httpx.Timeout:
+    return httpx.Timeout(seconds, pool=_SUPPLEMENTAL_POOL_TIMEOUT_SECONDS)
+
+
+async def _get_supplemental_client() -> httpx.AsyncClient:
+    """Lazily create the bounded process-wide Tavily/Firecrawl client."""
+    global _SUPPLEMENTAL_CLIENT
+    async with _SUPPLEMENTAL_CLIENT_LOCK:
+        if _SUPPLEMENTAL_CLIENT is None or getattr(_SUPPLEMENTAL_CLIENT,
+                                                   "is_closed", False):
+            _SUPPLEMENTAL_CLIENT = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    timeout=None,
+                    pool=_SUPPLEMENTAL_POOL_TIMEOUT_SECONDS,
+                ),
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30.0,
+                ),
+            )
+        return _SUPPLEMENTAL_CLIENT
+
+
+async def _reset_supplemental_client() -> None:
+    """Close and clear the shared client; intended for tests and shutdown hooks."""
+    global _SUPPLEMENTAL_CLIENT
+    async with _SUPPLEMENTAL_CLIENT_LOCK:
+        client = _SUPPLEMENTAL_CLIENT
+        _SUPPLEMENTAL_CLIENT = None
+    if client is not None and not getattr(client, "is_closed", False):
+        await client.aclose()
+
+
+class _SearchSingleFlight:
+    """Coalesce concurrent executions for an identical cache key."""
+
+    def __init__(self) -> None:
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._lock = asyncio.Lock()
+
+    async def run(self, key: str, factory):
+        async with self._lock:
+            task = self._tasks.get(key)
+            if task is None:
+                task = asyncio.create_task(self._run_factory(key, factory))
+                task.add_done_callback(self._consume_task_exception)
+                self._tasks[key] = task
+        return await asyncio.shield(task)
+
+    @staticmethod
+    def _consume_task_exception(task: asyncio.Task) -> None:
+        """Prevent an orphaned shared task from logging an unhandled error."""
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_factory(self, key: str, factory):
+        try:
+            return await factory()
+        finally:
+            current = asyncio.current_task()
+            async with self._lock:
+                if self._tasks.get(key) is current:
+                    self._tasks.pop(key, None)
+
+    async def clear(self) -> None:
+        """Clear completed entries; intended for tests."""
+        async with self._lock:
+            self._tasks = {
+                key: task for key, task in self._tasks.items() if not task.done()
+            }
 
 
 class SearchResultCache:
@@ -54,6 +134,10 @@ class SearchResultCache:
         mode: str,
     ) -> str:
         return f"{query}|{platform}|{model}|{extra_sources}|{mode}"
+
+    def key(self, query: str, platform: str, model: str, extra_sources: int,
+            mode: str) -> str:
+        return self._build_key(query, platform, model, extra_sources, mode)
 
     async def get(
         self,
@@ -93,6 +177,7 @@ class SearchResultCache:
 
 
 _RESULT_CACHE = SearchResultCache()
+_WEB_SEARCH_SINGLE_FLIGHT = _SearchSingleFlight()
 
 
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
@@ -217,6 +302,23 @@ async def web_search(
     cached = await _RESULT_CACHE.get(query, platform, model, extra_sources, mode)
     if cached is not None:
         return cached
+
+    cache_key = _RESULT_CACHE.key(query, platform, model, extra_sources, mode)
+
+    async def _execute() -> dict:
+        cached_after_join = await _RESULT_CACHE.get(query, platform, model,
+                                                    extra_sources, mode)
+        if cached_after_join is not None:
+            return cached_after_join
+        return await _execute_web_search(query, platform, model, extra_sources,
+                                         mode, session_id)
+
+    return await _WEB_SEARCH_SINGLE_FLIGHT.run(cache_key, _execute)
+
+
+async def _execute_web_search(query: str, platform: str, model: str,
+                              extra_sources: int, mode: str,
+                              session_id: str) -> dict:
 
     # Initialize router and validate configuration
     router = await get_router()
@@ -377,35 +479,37 @@ async def get_sources(
 
 
 async def _call_tavily_extract(url: str) -> str | None:
-    import httpx
     api_url = config.tavily_api_url
     api_keys = config.get_tavily_api_keys_in_rotation_order()
     if not api_keys:
         return None
     endpoint = f"{api_url.rstrip('/')}/extract"
     body = {"urls": [url], "format": "markdown"}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for api_key in api_keys:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            try:
-                response = await client.post(endpoint, headers=headers, json=body)
-                response.raise_for_status()
-                data = response.json()
-                if data.get("results") and len(data["results"]) > 0:
-                    content = data["results"][0].get("raw_content", "")
-                    return content if content and content.strip() else None
-                return None
-            except Exception:
-                continue
+    client = await _get_supplemental_client()
+    for api_key in api_keys:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            response = await client.post(endpoint,
+                                         headers=headers,
+                                         json=body,
+                                         timeout=_supplemental_request_timeout(
+                                             60.0))
+            response.raise_for_status()
+            data = response.json()
+            if data.get("results") and len(data["results"]) > 0:
+                content = data["results"][0].get("raw_content", "")
+                return content if content and content.strip() else None
+            return None
+        except Exception:
+            continue
     return None
 
 
 async def _call_tavily_search(query: str,
-                              max_results: int = 6) -> list[dict] | None:
-    import httpx
+                               max_results: int = 6) -> list[dict] | None:
     api_keys = config.get_tavily_api_keys_in_rotation_order()
     if not api_keys:
         return None
@@ -417,31 +521,34 @@ async def _call_tavily_search(query: str,
         "include_raw_content": False,
         "include_answer": False,
     }
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        for api_key in api_keys:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            try:
-                response = await client.post(endpoint, headers=headers, json=body)
-                response.raise_for_status()
-                data = response.json()
-                results = data.get("results", [])
-                return [{
-                    "title": r.get("title", ""),
-                    "url": r.get("url", ""),
-                    "content": r.get("content", ""),
-                    "score": r.get("score", 0)
-                } for r in results] if results else None
-            except Exception:
-                continue
+    client = await _get_supplemental_client()
+    for api_key in api_keys:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            response = await client.post(endpoint,
+                                         headers=headers,
+                                         json=body,
+                                         timeout=_supplemental_request_timeout(
+                                             90.0))
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("results", [])
+            return [{
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "content": r.get("content", ""),
+                "score": r.get("score", 0)
+            } for r in results] if results else None
+        except Exception:
+            continue
     return None
 
 
 async def _call_firecrawl_search(query: str,
-                                 limit: int = 14) -> list[dict] | None:
-    import httpx
+                                  limit: int = 14) -> list[dict] | None:
     api_key = config.firecrawl_api_key
     if not api_key:
         return None
@@ -452,22 +559,24 @@ async def _call_firecrawl_search(query: str,
     }
     body = {"query": query, "limit": limit}
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            results = data.get("data", {}).get("web", [])
-            return [{
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "description": r.get("description", "")
-            } for r in results] if results else None
+        client = await _get_supplemental_client()
+        response = await client.post(endpoint,
+                                     headers=headers,
+                                     json=body,
+                                     timeout=_supplemental_request_timeout(90.0))
+        response.raise_for_status()
+        data = response.json()
+        results = data.get("data", {}).get("web", [])
+        return [{
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "description": r.get("description", "")
+        } for r in results] if results else None
     except Exception:
         return None
 
 
 async def _call_firecrawl_scrape(url: str, ctx=None) -> str | None:
-    import httpx
     api_url = config.firecrawl_api_url
     api_key = config.firecrawl_api_key
     if not api_key:
@@ -486,19 +595,21 @@ async def _call_firecrawl_scrape(url: str, ctx=None) -> str | None:
             "waitFor": (attempt + 1) * 1500,
         }
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(endpoint,
-                                             headers=headers,
-                                             json=body)
-                response.raise_for_status()
-                data = response.json()
-                markdown = data.get("data", {}).get("markdown", "")
-                if markdown and markdown.strip():
-                    return markdown
-                await log_info(
-                    ctx,
-                    f"Firecrawl: markdown为空, 重试 {attempt + 1}/{max_retries}",
-                    config.debug_enabled)
+            client = await _get_supplemental_client()
+            response = await client.post(endpoint,
+                                         headers=headers,
+                                         json=body,
+                                         timeout=_supplemental_request_timeout(
+                                             90.0))
+            response.raise_for_status()
+            data = response.json()
+            markdown = data.get("data", {}).get("markdown", "")
+            if markdown and markdown.strip():
+                return markdown
+            await log_info(
+                ctx,
+                f"Firecrawl: markdown为空, 重试 {attempt + 1}/{max_retries}",
+                config.debug_enabled)
         except Exception as e:
             await log_info(ctx, f"Firecrawl error: {e}", config.debug_enabled)
             return None
@@ -557,7 +668,6 @@ async def _call_tavily_map(url: str,
                            max_breadth: int = 20,
                            limit: int = 50,
                            timeout: int = 150) -> str:
-    import httpx
     import json
     api_url = config.tavily_api_url
     api_keys = config.get_tavily_api_keys_in_rotation_order()
@@ -576,30 +686,34 @@ async def _call_tavily_map(url: str,
     timeout_error = False
     last_http_error: httpx.HTTPStatusError | None = None
     last_exception: Exception | None = None
-    async with httpx.AsyncClient(timeout=float(timeout + 10)) as client:
-        for api_key in api_keys:
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            try:
-                response = await client.post(endpoint, headers=headers, json=body)
-                response.raise_for_status()
-                data = response.json()
-                return json.dumps(
-                    {
-                        "base_url": data.get("base_url", ""),
-                        "results": data.get("results", []),
-                        "response_time": data.get("response_time", 0)
-                    },
-                    ensure_ascii=False,
-                    indent=2)
-            except httpx.TimeoutException:
-                timeout_error = True
-            except httpx.HTTPStatusError as e:
-                last_http_error = e
-            except Exception as e:
-                last_exception = e
+    client = await _get_supplemental_client()
+    for api_key in api_keys:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            response = await client.post(endpoint,
+                                         headers=headers,
+                                         json=body,
+                                         timeout=_supplemental_request_timeout(
+                                             float(timeout + 10)))
+            response.raise_for_status()
+            data = response.json()
+            return json.dumps(
+                {
+                    "base_url": data.get("base_url", ""),
+                    "results": data.get("results", []),
+                    "response_time": data.get("response_time", 0)
+                },
+                ensure_ascii=False,
+                indent=2)
+        except httpx.TimeoutException:
+            timeout_error = True
+        except httpx.HTTPStatusError as e:
+            last_http_error = e
+        except Exception as e:
+            last_exception = e
     if timeout_error:
         return f"映射超时: 请求超过{timeout}秒"
     if last_http_error is not None:

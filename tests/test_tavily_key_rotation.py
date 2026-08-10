@@ -51,7 +51,7 @@ async def test_tavily_search_tries_next_key_when_first_fails(monkeypatch):
 
     class MockAsyncClient:
         def __init__(self, *args, **kwargs):
-            pass
+            self.is_closed = False
 
         async def __aenter__(self):
             return self
@@ -59,14 +59,21 @@ async def test_tavily_search_tries_next_key_when_first_fails(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, endpoint, headers=None, json=None):
+        async def aclose(self):
+            self.is_closed = True
+
+        async def post(self, endpoint, headers=None, json=None, timeout=None):
             used_auth_headers.append(headers.get("Authorization", ""))
             should_fail = headers.get("Authorization") == "Bearer key-a"
             return MockResponse(should_fail=should_fail)
 
     monkeypatch.setattr(httpx, "AsyncClient", MockAsyncClient)
 
-    results = await server._call_tavily_search("hello", 1)
+    await server._reset_supplemental_client()
+    try:
+        results = await server._call_tavily_search("hello", 1)
+    finally:
+        await server._reset_supplemental_client()
 
     assert results == [{
         "title": "t",
