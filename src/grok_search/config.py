@@ -175,6 +175,19 @@ class Config:
             return None
         return value
 
+    @property
+    def openai_api_format(self) -> str:
+        """Select the upstream OpenAI-compatible request format.
+
+        Responses is the default because it carries native tool calls and
+        reasoning as first-class fields. Chat Completions remains available
+        for older compatible proxies.
+        """
+        value = os.getenv("OPENAI_API_FORMAT", "responses").strip().lower()
+        if value in ("chat", "chat_completion", "chat_completions"):
+            return "chat_completions"
+        return "responses"
+
     # --- Provider Registry ---
 
     def get_search_providers(self) -> list[dict]:
@@ -307,6 +320,7 @@ class Config:
             "SEARCH_PROVIDER_PRIMARY": self.search_provider_primary,
             "ENABLE_WEB_SEARCH": self.web_search_enabled,
             "REASONING_EFFORT": self.reasoning_effort or "none",
+            "OPENAI_API_FORMAT": self.openai_api_format,
             "providers": [
                 {
                     "name": "Grok",

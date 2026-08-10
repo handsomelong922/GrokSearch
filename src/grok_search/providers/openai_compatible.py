@@ -154,6 +154,54 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return self._provider_name
 
+    def _build_payload(self, system_prompt: str, user_prompt: str, *, search: bool = False) -> dict:
+        """Build a request in the configured OpenAI-compatible format."""
+        if config.openai_api_format == "responses":
+            payload = {
+                "model": self.model,
+                "instructions": system_prompt,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": user_prompt}],
+                    }
+                ],
+                "stream": True,
+            }
+            if search:
+                self._add_response_search_options(payload)
+            return payload
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": True,
+        }
+        if search:
+            self._add_chat_search_options(payload)
+        return payload
+
+    @staticmethod
+    def _add_response_search_options(payload: dict) -> None:
+        if config.web_search_enabled:
+            payload["tools"] = [{"type": "web_search"}]
+            payload["tool_choice"] = "auto"
+        reasoning_effort = config.reasoning_effort
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+
+    @staticmethod
+    def _add_chat_search_options(payload: dict) -> None:
+        if config.web_search_enabled:
+            payload["tools"] = [{"type": "web_search"}]
+            payload["tool_choice"] = "auto"
+        reasoning_effort = config.reasoning_effort
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+
     async def search(self, query: str, platform: str = "", mode: str = "balanced", min_results: int = 3, max_results: int = 10, ctx=None) -> List[SearchResult]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -167,31 +215,11 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         time_context = get_local_time_info() + "\n"
 
         system_prompt = get_search_prompt(mode)
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {"role": "user", "content": time_context + query + platform_prompt},
-            ],
-            "stream": True,
-        }
-
-        # 联网搜索工具：默认开启，由模型自主决定是否调用
-        # 对 grok2api 等代理，{"type":"web_search"} 会被识别并触发上游搜索
-        if config.web_search_enabled:
-            payload["tools"] = [{"type": "web_search"}]
-            payload["tool_choice"] = "auto"
-
-        # 思考深度：对支持 reasoning_effort 的上游生效（如 grok-3-thinking 等）
-        # 不支持的 API 会忽略此参数，不会导致请求失败
-        reasoning_effort = config.reasoning_effort
-        if reasoning_effort:
-            payload["reasoning_effort"] = reasoning_effort
-
+        payload = self._build_payload(
+            system_prompt,
+            time_context + query + platform_prompt,
+            search=True,
+        )
         await log_info(ctx, f"platform_prompt: { query + platform_prompt}", config.debug_enabled)
         if mode != "balanced":
             await log_info(ctx, f"search_mode: {mode}", config.debug_enabled)
@@ -203,17 +231,10 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": fetch_prompt,
-                },
-                {"role": "user", "content": url + "\n获取该网页内容并返回其结构化Markdown格式" },
-            ],
-            "stream": True,
-        }
+        payload = self._build_payload(
+            fetch_prompt,
+            url + "\n获取该网页内容并返回其结构化Markdown格式",
+        )
         return await self._execute_stream_with_retry(headers, payload, ctx)
 
     async def _parse_streaming_response(self, response, ctx=None) -> str:
@@ -257,6 +278,141 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
 
         return content
 
+    @staticmethod
+    def _extract_annotation_url(annotation: dict) -> str | None:
+        """Extract a citation URL from flat or nested Responses annotations."""
+        url = annotation.get("url")
+        if isinstance(url, str) and url:
+            return url
+
+        for key in ("url_citation", "citation"):
+            nested = annotation.get(key)
+            if isinstance(nested, dict):
+                url = nested.get("url")
+                if isinstance(url, str) and url:
+                    return url
+        return None
+
+    @classmethod
+    def _extract_response_text(cls, data: dict) -> tuple[str, list[str]]:
+        """Extract final text and URL annotations from a Responses object."""
+        response = data.get("response") if isinstance(data.get("response"), dict) else data
+        text = response.get("output_text", "") if isinstance(response, dict) else ""
+        sources: list[str] = []
+        output = response.get("output", []) if isinstance(response, dict) else []
+        if isinstance(output, list):
+            parts = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content", []) or []:
+                    if not isinstance(content, dict):
+                        continue
+                    for annotation in content.get("annotations", []) or []:
+                        if isinstance(annotation, dict):
+                            url = cls._extract_annotation_url(annotation)
+                            if url:
+                                sources.append(url)
+                    if content.get("type") in ("output_text", "text"):
+                        value = content.get("text", "")
+                        if isinstance(value, str):
+                            parts.append(value)
+            if not text:
+                text = "".join(parts)
+        return text if isinstance(text, str) else "", sources
+
+    @staticmethod
+    def _append_response_sources(content: str, sources: list[str]) -> str:
+        unique_sources = []
+        seen = set()
+        for url in sources:
+            if url not in seen and url not in content:
+                seen.add(url)
+                unique_sources.append(url)
+        if not unique_sources:
+            return content
+        return content.rstrip() + "\n\nSources:\n" + "\n".join(f"- {url}" for url in unique_sources)
+
+    async def _parse_responses_streaming_response(self, response, ctx=None) -> str:
+        """Parse Responses SSE events and compatible non-streaming JSON."""
+        content_parts: list[str] = []
+        sources: list[str] = []
+        completed: dict | None = None
+        fallback_text = ""
+        event_type = ""
+
+        async for line in response.aiter_lines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+                continue
+            raw = line[5:].lstrip() if line.startswith("data:") else line
+            if raw == "[DONE]":
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+
+            data_type = data.get("type", "")
+            current_event_type = data_type or event_type
+            if current_event_type == "response.output_text.delta":
+                delta = data.get("delta", "")
+                if isinstance(delta, str):
+                    content_parts.append(delta)
+            elif current_event_type == "response.output_text.done":
+                value = data.get("text", "")
+                if isinstance(value, str):
+                    fallback_text = value
+            elif current_event_type == "response.output_text.annotation.added":
+                annotation = data.get("annotation", {})
+                if isinstance(annotation, dict):
+                    url = self._extract_annotation_url(annotation)
+                    if url:
+                        sources.append(url)
+            elif current_event_type == "response.completed":
+                completed = data
+                completed_text, completed_sources = self._extract_response_text(data)
+                if completed_text:
+                    fallback_text = completed_text
+                sources.extend(completed_sources)
+            elif current_event_type == "response.output_item.done":
+                item = data.get("item")
+                if isinstance(item, dict):
+                    item_text, item_sources = self._extract_response_text({"output": [item]})
+                    if item_text:
+                        fallback_text = item_text
+                    sources.extend(item_sources)
+            elif current_event_type == "response.content_part.done":
+                part = data.get("part")
+                if isinstance(part, dict):
+                    part_text, part_sources = self._extract_response_text(
+                        {"output": [{"content": [part]}]}
+                    )
+                    if part_text:
+                        fallback_text = part_text
+                    sources.extend(part_sources)
+            elif not current_event_type:
+                fallback_text, event_sources = self._extract_response_text(data)
+                sources.extend(event_sources)
+
+            event_type = ""
+
+        content = "".join(content_parts)
+        if not content:
+            if completed:
+                content, completed_sources = self._extract_response_text(completed)
+                sources.extend(completed_sources)
+            elif fallback_text:
+                content = fallback_text
+        content = self._append_response_sources(content, sources)
+        await log_info(ctx, f"content: {content}", config.debug_enabled)
+        return content
+
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         """执行带重试机制的流式 HTTP 请求"""
         connect_timeout = float(os.getenv("GROK_HTTP_CONNECT_TIMEOUT_SECONDS", "10"))
@@ -270,6 +426,12 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         )
 
         client = await _get_shared_client(timeout)
+        parser = (
+            self._parse_responses_streaming_response
+            if config.openai_api_format == "responses"
+            else self._parse_streaming_response
+        )
+        endpoint = "responses" if config.openai_api_format == "responses" else "chat/completions"
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(config.retry_max_attempts + 1),
             wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
@@ -279,12 +441,12 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             with attempt:
                 async with client.stream(
                     "POST",
-                    f"{self.api_url}/chat/completions",
+                    f"{self.api_url.rstrip('/')}/{endpoint}",
                     headers=headers,
                     json=payload,
                 ) as response:
                     response.raise_for_status()
-                    return await self._parse_streaming_response(response, ctx)
+                    return await parser(response, ctx)
 
     async def describe_url(self, url: str, ctx=None) -> dict:
         """让 Grok 阅读单个 URL 并返回 title + extracts"""
@@ -292,14 +454,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": url_describe_prompt},
-                {"role": "user", "content": url},
-            ],
-            "stream": True,
-        }
+        payload = self._build_payload(url_describe_prompt, url)
         result = await self._execute_stream_with_retry(headers, payload, ctx)
         title, extracts = url, ""
         for line in result.strip().splitlines():
@@ -315,14 +470,10 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": rank_sources_prompt},
-                {"role": "user", "content": f"Query: {query}\n\n{sources_text}"},
-            ],
-            "stream": True,
-        }
+        payload = self._build_payload(
+            rank_sources_prompt,
+            f"Query: {query}\n\n{sources_text}",
+        )
         result = await self._execute_stream_with_retry(headers, payload, ctx)
         order: list[int] = []
         seen: set[int] = set()
