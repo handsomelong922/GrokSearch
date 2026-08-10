@@ -180,6 +180,18 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "stream": True,
         }
 
+        # 联网搜索工具：默认开启，由模型自主决定是否调用
+        # 对 grok2api 等代理，{"type":"web_search"} 会被识别并触发上游搜索
+        if config.web_search_enabled:
+            payload["tools"] = [{"type": "web_search"}]
+            payload["tool_choice"] = "auto"
+
+        # 思考深度：对支持 reasoning_effort 的上游生效（如 grok-3-thinking 等）
+        # 不支持的 API 会忽略此参数，不会导致请求失败
+        reasoning_effort = config.reasoning_effort
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+
         await log_info(ctx, f"platform_prompt: { query + platform_prompt}", config.debug_enabled)
         if mode != "balanced":
             await log_info(ctx, f"search_mode: {mode}", config.debug_enabled)

@@ -142,6 +142,8 @@ claude mcp add-json grok-search --scope user '{
 | `GEMINI_MODEL` | ❌ | `gemini-2.0-flash` | Gemini 默认模型 |
 | `SEARCH_PROVIDER_STRATEGY` | ❌ | `parallel` | 搜索策略：`parallel`（并行）、`fallback`（降级）、`primary`（仅主 Provider） |
 | `SEARCH_PROVIDER_PRIMARY` | ❌ | `grok` | 主 Provider：`grok` 或 `gemini`，决定主答案来源 |
+| `ENABLE_WEB_SEARCH` | ❌ | `true` | 是否在搜索请求中发送 `web_search` 工具，`false` 时关闭 |
+| `REASONING_EFFORT` | ❌ | `high` | 思考深度：`none`/`off`/`false` 关闭，其他值（`low`/`medium`/`high`）原样传给上游 |
 
 
 ### 多 Provider 并行搜索
@@ -269,7 +271,7 @@ docker run --rm -p 8000:8000 \
 
 ### `web_search` — AI 网络搜索
 
-通过 Grok API 执行 AI 驱动的网络搜索，默认仅返回 Grok 的回答正文，并返回 `session_id` 以便后续获取信源。
+通过 OpenAI 兼容 API 执行 AI 驱动的网络搜索。默认请求会携带 `tools=[{"type":"web_search"}]` 和 `tool_choice="auto"`，由上游模型自主决定是否调用联网搜索；同时默认发送 `reasoning_effort=high` 给支持该参数的上游。可通过 `ENABLE_WEB_SEARCH` 和 `REASONING_EFFORT` 调整这两个行为。默认仅返回模型回答正文，并返回 `session_id` 以便后续获取信源。
 
 `web_search` 输出不展开信源，仅返回 `sources_count`；信源会按 `session_id` 缓存在服务端，可用 `get_sources` 拉取。
 

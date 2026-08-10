@@ -137,6 +137,8 @@ You can also configure additional environment variables in the `env` field:
 | `GROK_RETRY_MAX_ATTEMPTS` | No | `3` | Max retry attempts |
 | `GROK_RETRY_MULTIPLIER` | No | `1` | Retry backoff multiplier |
 | `GROK_RETRY_MAX_WAIT` | No | `10` | Max retry wait in seconds |
+| `ENABLE_WEB_SEARCH` | No | `true` | Include the `web_search` tool in `web_search` requests; set to `false` to disable |
+| `REASONING_EFFORT` | No | `high` | Reasoning effort forwarded to compatible upstreams; `none`, `off`, or `false` disables it |
 
 > **Note**: When `GUDA_API_KEY` is set, all `GROK_API_URL`/`GROK_API_KEY`/`TAVILY_*`/`FIRECRAWL_*` variables become optional as they are auto-derived from `GUDA_BASE_URL`. Explicitly set variables take higher priority.
 
@@ -218,7 +220,7 @@ After deployment, use `${PUBLIC_URL}/mcp` in your AI client's MCP URL config.
 
 ### `web_search` — AI Web Search
 
-Executes AI-driven web search via Grok API. By default it returns only Grok's answer and a `session_id` for retrieving sources later.
+Executes AI-driven web search via an OpenAI-compatible API. By default, requests include `tools=[{"type":"web_search"}]` and `tool_choice="auto"`, allowing the upstream model to decide whether to search. Requests also include `reasoning_effort=high` for upstreams that support it. These behaviors can be adjusted with `ENABLE_WEB_SEARCH` and `REASONING_EFFORT`. The response includes the model answer and a `session_id` for retrieving sources later.
 
 `web_search` does not expand sources in the response; it only returns `sources_count`. Sources are cached server-side by `session_id` and can be fetched with `get_sources`.
 
