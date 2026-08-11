@@ -72,12 +72,18 @@ def _needs_time_context(query: str) -> bool:
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
+class ResponseFailedError(Exception):
+    """Raised when the API returns a response.failed event."""
+
+
 def _is_retryable_exception(exc) -> bool:
     """检查异常是否可重试"""
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in RETRYABLE_STATUS_CODES
+    if isinstance(exc, ResponseFailedError):
+        return True
     return False
 
 
@@ -239,7 +245,8 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
 
     async def _parse_streaming_response(self, response, ctx=None) -> str:
         content = ""
-        full_body_buffer = [] 
+        full_body_buffer = []
+        error_message = ""
         
         async for line in response.aiter_lines():
             line = line.strip()
@@ -256,6 +263,14 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                     # 去掉 "data:" 前缀，并去除可能的空格
                     json_str = line[5:].lstrip()
                     data = json.loads(json_str)
+                    # Check for API error in chat completions response
+                    if "error" in data:
+                        err = data["error"]
+                        if isinstance(err, dict):
+                            error_message = f"API error: [{err.get('code', 'unknown')}] {err.get('message', str(err))}"
+                        else:
+                            error_message = f"API error: {str(err)}"
+                        break
                     choices = data.get("choices", [])
                     if choices and len(choices) > 0:
                         delta = choices[0].get("delta", {})
@@ -264,10 +279,19 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 except (json.JSONDecodeError, IndexError):
                     continue
                 
+        if error_message and not content:
+            raise ResponseFailedError(error_message)
+
         if not content and full_body_buffer:
             try:
                 full_text = "".join(full_body_buffer)
                 data = json.loads(full_text)
+                if "error" in data:
+                    err = data["error"]
+                    if isinstance(err, dict):
+                        raise ResponseFailedError(f"API error: [{err.get('code', 'unknown')}] {err.get('message', str(err))}")
+                    else:
+                        raise ResponseFailedError(f"API error: {str(err)}")
                 if "choices" in data and len(data["choices"]) > 0:
                     message = data["choices"][0].get("message", {})
                     content = message.get("content", "")
@@ -339,6 +363,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         sources: list[str] = []
         completed: dict | None = None
         fallback_text = ""
+        error_message = ""
         event_type = ""
 
         async for line in response.aiter_lines():
@@ -386,6 +411,15 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 "response.incomplete",
                 "response.cancelled",
             }:
+                error = data.get("response", {}).get("error", {}) if isinstance(data.get("response"), dict) else data.get("error", {})
+                if isinstance(error, dict):
+                    error_code = error.get("code", "unknown")
+                    error_msg = error.get("message", str(error))
+                else:
+                    error_code = "unknown"
+                    error_msg = str(error)
+                error_message = f"API returned {current_event_type}: [{error_code}] {error_msg}"
+                await log_info(ctx, error_message, config.debug_enabled)
                 break
             elif current_event_type == "response.output_item.done":
                 item = data.get("item")
@@ -408,6 +442,10 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 sources.extend(event_sources)
 
             event_type = ""
+
+        # If we got a failure event, raise an exception so retry logic can handle it
+        if error_message:
+            raise ResponseFailedError(error_message)
 
         content = "".join(content_parts)
         if not content:
