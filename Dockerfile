@@ -12,10 +12,10 @@ RUN pip install --no-cache-dir .
 
 ENV MCP_TRANSPORT=http \
     MCP_HOST=0.0.0.0 \
-    MCP_PORT=8000 \
+    MCP_PORT=7860 \
     MCP_PATH=/mcp \
     MCP_STATELESS_HTTP=true
 
-EXPOSE 8000
+EXPOSE 7860
 
 CMD ["grok-search"]

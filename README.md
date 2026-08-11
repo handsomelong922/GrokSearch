@@ -39,7 +39,7 @@ Claude ──MCP──► Grok Search Server
 ![](./images/wogrok.png)
 如上图，**为公平实验，我们打开了claude模型内置的搜索工具**，然而opus 4.6仍然相信自己的内部常识，不查询FastAPI的官方文档，以获取最新示例。
 ![](./images/wgrok.png)
-如上图，当打开`grok-search MCP`时，在相同的实验条件下，opus 4.6主动调用多次搜索，以**获取官方文档，回答更可靠。** 
+如上图，当打开`grok-search MCP`时，在相同的实验条件下，opus 4.6主动调用多次搜索，以**获取官方文档，回答更可靠。**
 
 
 ## 二、安装
@@ -141,6 +141,10 @@ claude mcp add-json grok-search --scope user '{
 | `GEMINI_API_KEY` | ❌ | - | Gemini API 密钥（配置后同时启用 Grok + Gemini 并行搜索） |
 | `GEMINI_MODEL` | ❌ | `gemini-2.0-flash` | Gemini 默认模型 |
 | `SEARCH_PROVIDER_STRATEGY` | ❌ | `parallel` | 搜索策略：`parallel`（并行）、`fallback`（降级）、`primary`（仅主 Provider） |
+| `SEARCH_PROVIDER_PRIMARY` | ❌ | `grok` | 主 Provider：`grok` 或 `gemini`，决定主答案来源 |
+| `OPENAI_API_FORMAT` | ❌ | `responses` | 上游请求格式：`responses`（默认）或 `chat_completions`（兼容回退） |
+| `ENABLE_WEB_SEARCH` | ❌ | `true` | 是否在搜索请求中发送 `web_search` 工具，`false` 时关闭 |
+| `REASONING_EFFORT` | ❌ | `high` | Responses 发送 `reasoning.effort`；Chat Completions 发送 `reasoning_effort`；`none`/`off`/`false` 关闭 |
 
 
 ### 多 Provider 并行搜索
@@ -171,9 +175,10 @@ claude mcp add-json grok-search --scope user '{
 #### 并行搜索的工作方式
 
 1. **并行执行**：`web_search` 同时调用 Grok 和 Gemini 进行搜索
-2. **择优取答案**：两个 Provider 均成功时，选择内容更详细（长度更长）的回答作为主答案
-3. **信源合并**：两个 Provider 搜索到的信源自动去重合并，通过 `get_sources` 返回
-4. **自动降级**：其中一个 Provider 失败时，自动使用另一个 Provider 的结果，不中断服务
+2. **主答案固定**：主 Provider（默认 Grok）的回答作为主答案，可通过 `SEARCH_PROVIDER_PRIMARY` 切换
+3. **增量补充**：副 Provider（默认 Gemini）的回答做语义去重，只提取主答案未包含的信息，通过 `supplementary` 字段返回
+4. **信源合并**：两个 Provider 搜索到的信源自动去重合并，通过 `get_sources` 返回
+5. **自动降级**：其中一个 Provider 失败时，自动使用另一个 Provider 的结果，不中断服务
 
 #### 路由策略
 
@@ -192,7 +197,7 @@ claude mcp add-json grok-search --scope user '{
 claude mcp list
 ```
 
-🍟 显示连接成功后，我们**十分推荐**在 Claude 对话中输入 
+🍟 显示连接成功后，我们**十分推荐**在 Claude 对话中输入
 ```
 调用 grok-search toggle_builtin_tools，关闭Claude Code's built-in WebSearch and WebFetch tools
 ```
@@ -267,7 +272,7 @@ docker run --rm -p 8000:8000 \
 
 ### `web_search` — AI 网络搜索
 
-通过 Grok API 执行 AI 驱动的网络搜索，默认仅返回 Grok 的回答正文，并返回 `session_id` 以便后续获取信源。
+通过 OpenAI 兼容 API 执行 AI 驱动的网络搜索。默认使用 Responses API，请求携带 `tools=[{"type":"web_search"}]`、`tool_choice="auto"` 和 `reasoning={"effort":"high"}`，由上游模型自主决定是否联网搜索。设置 `OPENAI_API_FORMAT=chat_completions` 时回退到旧格式，并发送 `reasoning_effort=high`。可通过 `ENABLE_WEB_SEARCH` 和 `REASONING_EFFORT` 调整这些行为。默认仅返回模型回答正文，并返回 `session_id` 以便后续获取信源。
 
 `web_search` 输出不展开信源，仅返回 `sources_count`；信源会按 `session_id` 缓存在服务端，可用 `get_sources` 拉取。
 
@@ -357,7 +362,7 @@ A: Grok（`GROK_API_URL` + `GROK_API_KEY`）为必填，提供核心搜索能力
 <summary>
 Q: Grok API 地址需要什么格式？
 </summary>
-A: 需要 OpenAI 兼容格式的 API 地址（支持 `/chat/completions` 和 `/models` 端点）。如使用官方 Grok，需通过兼容 OpenAI 格式的镜像站访问。
+A: 需要 OpenAI 兼容格式的 API 地址（默认支持 `/responses`；设置 `OPENAI_API_FORMAT=chat_completions` 后使用 `/chat/completions`）。如使用官方 Grok，需通过兼容 OpenAI 格式的镜像站访问。
 </details>
 
 <details>

@@ -137,6 +137,9 @@ You can also configure additional environment variables in the `env` field:
 | `GROK_RETRY_MAX_ATTEMPTS` | No | `3` | Max retry attempts |
 | `GROK_RETRY_MULTIPLIER` | No | `1` | Retry backoff multiplier |
 | `GROK_RETRY_MAX_WAIT` | No | `10` | Max retry wait in seconds |
+| `OPENAI_API_FORMAT` | No | `responses` | Upstream request format: `responses` (default) or `chat_completions` (compatibility fallback) |
+| `ENABLE_WEB_SEARCH` | No | `true` | Include the `web_search` tool in search requests; set to `false` to disable |
+| `REASONING_EFFORT` | No | `high` | Responses sends `reasoning.effort`; Chat Completions sends `reasoning_effort`; `none`, `off`, or `false` disables it |
 
 > **Note**: When `GUDA_API_KEY` is set, all `GROK_API_URL`/`GROK_API_KEY`/`TAVILY_*`/`FIRECRAWL_*` variables become optional as they are auto-derived from `GUDA_BASE_URL`. Explicitly set variables take higher priority.
 
@@ -218,7 +221,7 @@ After deployment, use `${PUBLIC_URL}/mcp` in your AI client's MCP URL config.
 
 ### `web_search` — AI Web Search
 
-Executes AI-driven web search via Grok API. By default it returns only Grok's answer and a `session_id` for retrieving sources later.
+Executes AI-driven web search via an OpenAI-compatible API. By default, requests use the Responses API and include `tools=[{"type":"web_search"}]`, `tool_choice="auto"`, and `reasoning={"effort":"high"}`, allowing the upstream model to decide whether to search. Set `OPENAI_API_FORMAT=chat_completions` to use the legacy endpoint and `reasoning_effort=high` field. These behaviors can be adjusted with `ENABLE_WEB_SEARCH` and `REASONING_EFFORT`. The response includes the model answer and a `session_id` for retrieving sources later.
 
 `web_search` does not expand sources in the response; it only returns `sources_count`. Sources are cached server-side by `session_id` and can be fetched with `get_sources`.
 
@@ -308,7 +311,7 @@ A: Set `GUDA_API_KEY` to get full Grok + Tavily + Firecrawl service. Without GuD
 <summary>
 Q: What format does the Grok API URL need?
 </summary>
-A: An OpenAI-compatible API endpoint (supporting `/chat/completions` and `/models` endpoints). If using official Grok, access it through an OpenAI-compatible mirror.
+A: An OpenAI-compatible API endpoint (supporting `/responses`; `/chat/completions` remains available through `OPENAI_API_FORMAT=chat_completions`). If using official Grok, access it through an OpenAI-compatible mirror.
 </details>
 
 <details>

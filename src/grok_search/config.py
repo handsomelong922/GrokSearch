@@ -14,6 +14,7 @@ class Config:
     _DEFAULT_MODEL = "grok-4-fast"
     _DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
     _DEFAULT_STRATEGY = "parallel"
+    _DEFAULT_PRIMARY = "grok"
 
     def __new__(cls):
         if cls._instance is None:
@@ -147,6 +148,46 @@ class Config:
         """Returns the search provider strategy: parallel | fallback | primary"""
         return (os.getenv("SEARCH_PROVIDER_STRATEGY") or self._DEFAULT_STRATEGY).strip().lower()
 
+    @property
+    def search_provider_primary(self) -> str:
+        """Returns the primary provider name for content selection: grok | gemini"""
+        return (os.getenv("SEARCH_PROVIDER_PRIMARY") or self._DEFAULT_PRIMARY).strip().lower()
+
+    # --- Web Search Tool & Reasoning ---
+
+    @property
+    def web_search_enabled(self) -> bool:
+        """Whether to send tools=[{"type":"web_search"}] in search requests.
+        When enabled, OpenAI-compatible proxies (e.g. grok2api) can recognize
+        the web_search tool and trigger upstream search automatically.
+        Default: true"""
+        return os.getenv("ENABLE_WEB_SEARCH", "true").strip().lower() in ("true", "1", "yes")
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        """Reasoning effort level for search requests.
+        Passed as reasoning_effort in the API payload. Supported values:
+        'none'/'off'/'false' → disabled (returns None)
+        Other values (e.g. 'low', 'medium', 'high') → passed through to upstream.
+        Default: 'high'"""
+        value = os.getenv("REASONING_EFFORT", "high").strip().lower()
+        if value in ("none", "off", "false"):
+            return None
+        return value
+
+    @property
+    def openai_api_format(self) -> str:
+        """Select the upstream OpenAI-compatible request format.
+
+        Responses is the default because it carries native tool calls and
+        reasoning as first-class fields. Chat Completions remains available
+        for older compatible proxies.
+        """
+        value = os.getenv("OPENAI_API_FORMAT", "responses").strip().lower()
+        if value in ("chat", "chat_completion", "chat_completions"):
+            return "chat_completions"
+        return "responses"
+
     # --- Provider Registry ---
 
     def get_search_providers(self) -> list[dict]:
@@ -276,6 +317,10 @@ class Config:
             "GEMINI_API_KEY": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置",
             "GEMINI_MODEL": self.gemini_model if self.gemini_enabled else "未配置",
             "SEARCH_PROVIDER_STRATEGY": self.search_provider_strategy,
+            "SEARCH_PROVIDER_PRIMARY": self.search_provider_primary,
+            "ENABLE_WEB_SEARCH": self.web_search_enabled,
+            "REASONING_EFFORT": self.reasoning_effort or "none",
+            "OPENAI_API_FORMAT": self.openai_api_format,
             "providers": [
                 {
                     "name": "Grok",
