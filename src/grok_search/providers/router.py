@@ -152,7 +152,7 @@ class ProviderRouter:
             result.errors.append("没有可用的搜索 Provider")
             return result
 
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "80"))
         primary_name = config.search_provider_primary.capitalize()
 
         async def _safe_call(provider: BaseSearchProvider) -> ProviderAnswer:
@@ -226,7 +226,7 @@ class ProviderRouter:
     ) -> SearchBatchResult:
         """Try providers in order, fall back on failure."""
         result = SearchBatchResult()
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "80"))
 
         for provider in providers:
             name = provider.get_provider_name()
@@ -276,7 +276,7 @@ class ProviderRouter:
         provider = providers[0]
         name = provider.get_provider_name()
         result.providers_used.append(name)
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "80"))
 
         try:
             content = await asyncio.wait_for(
