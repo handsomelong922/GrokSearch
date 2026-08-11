@@ -152,7 +152,7 @@ class ProviderRouter:
             result.errors.append("没有可用的搜索 Provider")
             return result
 
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
         primary_name = config.search_provider_primary.capitalize()
 
         async def _safe_call(provider: BaseSearchProvider) -> ProviderAnswer:
@@ -165,6 +165,8 @@ class ProviderRouter:
                 return ProviderAnswer(name, content)
             except asyncio.TimeoutError:
                 return ProviderAnswer(name, "", f"{name.lower()}_timeout")
+            except asyncio.CancelledError:
+                return ProviderAnswer(name, "", f"{name.lower()}_cancelled")
             except Exception as e:
                 return ProviderAnswer(name, "", f"{name.lower()}_error: {type(e).__name__}: {e}")
 
@@ -224,7 +226,7 @@ class ProviderRouter:
     ) -> SearchBatchResult:
         """Try providers in order, fall back on failure."""
         result = SearchBatchResult()
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
 
         for provider in providers:
             name = provider.get_provider_name()
@@ -244,6 +246,11 @@ class ProviderRouter:
                 result.errors.append(err)
                 result.answers.append(ProviderAnswer(name, "", err))
                 continue
+            except asyncio.CancelledError:
+                err = f"{name.lower()}_cancelled"
+                result.errors.append(err)
+                result.answers.append(ProviderAnswer(name, "", err))
+                return result
             except Exception as e:
                 err = f"{name.lower()}_error: {type(e).__name__}: {e}"
                 result.errors.append(err)
@@ -269,7 +276,7 @@ class ProviderRouter:
         provider = providers[0]
         name = provider.get_provider_name()
         result.providers_used.append(name)
-        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "120"))
+        timeout = float(os.getenv("WEB_SEARCH_GROK_TIMEOUT_SECONDS", "100"))
 
         try:
             content = await asyncio.wait_for(
@@ -283,6 +290,9 @@ class ProviderRouter:
         except asyncio.TimeoutError:
             result.errors.append(f"{name.lower()}_timeout")
             result.answers.append(ProviderAnswer(name, "", f"{name.lower()}_timeout"))
+        except asyncio.CancelledError:
+            result.errors.append(f"{name.lower()}_cancelled")
+            result.answers.append(ProviderAnswer(name, "", f"{name.lower()}_cancelled"))
         except Exception as e:
             err = f"{name.lower()}_error: {type(e).__name__}: {e}"
             result.errors.append(err)
