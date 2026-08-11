@@ -188,9 +188,6 @@ async def test_responses_stream_parser_stops_at_completed_and_preserves_payload(
     "terminal_line",
     [
         "data: [DONE]",
-        'data: {"type":"response.failed"}',
-        'data: {"type":"response.incomplete"}',
-        'data: {"type":"response.cancelled"}',
     ],
 )
 async def test_responses_stream_parser_stops_at_terminal_events(terminal_line):
@@ -208,6 +205,33 @@ async def test_responses_stream_parser_stops_at_terminal_events(terminal_line):
     assert await provider._parse_responses_streaming_response(response) == (
         "partial\n\nSources:\n- https://example.test/source"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_line,expected_type",
+    [
+        ('data: {"type":"response.failed"}', "response.failed"),
+        ('data: {"type":"response.incomplete"}', "response.incomplete"),
+        ('data: {"type":"response.cancelled"}', "response.cancelled"),
+    ],
+)
+async def test_responses_stream_parser_raises_on_terminal_errors(terminal_line, expected_type):
+    from grok_search.providers.openai_compatible import ResponseFailedError
+    provider = OpenAICompatibleSearchProvider(
+        api_url="https://example.test/v1",
+        api_key="test-key",
+        model="grok-test",
+    )
+    response = _TerminalStreamingResponse([
+        'data: {"type":"response.output_text.delta","delta":"partial"}',
+        'data: {"type":"response.output_text.annotation.added","annotation":{"url":"https://example.test/source"}}',
+        terminal_line,
+    ])
+
+    with pytest.raises(ResponseFailedError) as excinfo:
+        await provider._parse_responses_streaming_response(response)
+    assert expected_type in str(excinfo.value)
 
 
 @pytest.mark.asyncio

@@ -422,11 +422,15 @@ async def _execute_web_search(query: str, platform: str, model: str,
         # Build a detailed error list for debugging.
         errors = batch_result.errors + [e for e in [tavily_error, firecrawl_error] if e]
         await _SOURCES_CACHE.set(session_id, [])
+        error_detail = "搜索未返回有效结果。"
+        if errors:
+            error_detail += " Provider 错误详情: " + "; ".join(errors)
+        else:
+            error_detail += " 请检查 Provider 配置（GROK_API_URL/GROK_API_KEY 或 GEMINI_API_URL/GEMINI_API_KEY），并确认上游接口可访问后重试。"
         return {
             "session_id":
             session_id,
-            "content": ("搜索未返回有效结果。请检查 Provider 配置（GROK_API_URL/GROK_API_KEY"
-                        " 或 GEMINI_API_URL/GEMINI_API_KEY），并确认上游接口可访问后重试。"),
+            "content": error_detail,
             "sources_count":
             0,
             "error":

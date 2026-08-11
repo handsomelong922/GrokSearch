@@ -166,7 +166,7 @@ class ProviderRouter:
             except asyncio.TimeoutError:
                 return ProviderAnswer(name, "", f"{name.lower()}_timeout")
             except Exception as e:
-                return ProviderAnswer(name, "", f"{name.lower()}_error: {type(e).__name__}")
+                return ProviderAnswer(name, "", f"{name.lower()}_error: {type(e).__name__}: {e}")
 
         # Run all providers concurrently
         answers = await asyncio.gather(*[_safe_call(p) for p in providers])
@@ -245,7 +245,7 @@ class ProviderRouter:
                 result.answers.append(ProviderAnswer(name, "", err))
                 continue
             except Exception as e:
-                err = f"{name.lower()}_error: {type(e).__name__}"
+                err = f"{name.lower()}_error: {type(e).__name__}: {e}"
                 result.errors.append(err)
                 result.answers.append(ProviderAnswer(name, "", err))
                 continue
@@ -284,8 +284,9 @@ class ProviderRouter:
             result.errors.append(f"{name.lower()}_timeout")
             result.answers.append(ProviderAnswer(name, "", f"{name.lower()}_timeout"))
         except Exception as e:
-            result.errors.append(f"{name.lower()}_error: {type(e).__name__}")
-            result.answers.append(ProviderAnswer(name, "", f"{name.lower()}_error: {type(e).__name__}"))
+            err = f"{name.lower()}_error: {type(e).__name__}: {e}"
+            result.errors.append(err)
+            result.answers.append(ProviderAnswer(name, "", err))
 
         return result
 
