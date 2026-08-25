@@ -123,8 +123,6 @@ class Config:
     def firecrawl_api_key(self) -> str | None:
         return os.getenv("FIRECRAWL_API_KEY")
 
-    # --- Gemini Provider Config ---
-
     @property
     def gemini_api_url(self) -> str | None:
         return os.getenv("GEMINI_API_URL")
@@ -141,86 +139,44 @@ class Config:
     def gemini_enabled(self) -> bool:
         return bool(self.gemini_api_url and self.gemini_api_key)
 
-    # --- Provider Strategy ---
-
     @property
     def search_provider_strategy(self) -> str:
-        """Returns the search provider strategy: parallel | fallback | primary"""
         return (os.getenv("SEARCH_PROVIDER_STRATEGY") or self._DEFAULT_STRATEGY).strip().lower()
 
     @property
     def search_provider_primary(self) -> str:
-        """Returns the primary provider name for content selection: grok | gemini"""
         return (os.getenv("SEARCH_PROVIDER_PRIMARY") or self._DEFAULT_PRIMARY).strip().lower()
-
-    # --- Web Search Tool & Reasoning ---
 
     @property
     def web_search_enabled(self) -> bool:
-        """Whether to send tools=[{"type":"web_search"}] in search requests.
-        When enabled, OpenAI-compatible proxies (e.g. grok2api) can recognize
-        the web_search tool and trigger upstream search automatically.
-        Default: true"""
         return os.getenv("ENABLE_WEB_SEARCH", "true").strip().lower() in ("true", "1", "yes")
 
     @property
     def reasoning_effort(self) -> str | None:
-        """Reasoning effort level for search requests.
-        Passed as reasoning_effort in the API payload. Supported values:
-        'none'/'off'/'false' → disabled (returns None)
-        Other values (e.g. 'low', 'medium', 'high') → passed through to upstream.
-        Default: 'low'"""
-        value = os.getenv("REASONING_EFFORT", "low").strip().lower()
+        value = os.getenv("REASONING_EFFORT", "high").strip().lower()
         if value in ("none", "off", "false"):
             return None
         return value
 
     @property
     def openai_api_format(self) -> str:
-        """Select the upstream OpenAI-compatible request format.
-
-        Responses is the default because it carries native tool calls and
-        reasoning as first-class fields. Chat Completions remains available
-        for older compatible proxies.
-        """
         value = os.getenv("OPENAI_API_FORMAT", "responses").strip().lower()
         if value in ("chat", "chat_completion", "chat_completions"):
             return "chat_completions"
         return "responses"
 
-    # --- Provider Registry ---
-
     def get_search_providers(self) -> list[dict]:
-        """Return list of provider config dicts for all configured providers."""
         providers = []
-
-        # Primary: Grok (always required)
         try:
-            providers.append({
-                "name": "Grok",
-                "api_url": self.grok_api_url,
-                "api_key": self.grok_api_key,
-                "model": self.grok_model,
-                "enabled": True,
-            })
+            providers.append({"name": "Grok", "api_url": self.grok_api_url, "api_key": self.grok_api_key, "model": self.grok_model, "enabled": True})
         except ValueError:
             pass
-
-        # Secondary: Gemini (optional)
         if self.gemini_enabled:
-            providers.append({
-                "name": "Gemini",
-                "api_url": self.gemini_api_url,
-                "api_key": self.gemini_api_key,
-                "model": self.gemini_model,
-                "enabled": True,
-            })
-
+            providers.append({"name": "Gemini", "api_url": self.gemini_api_url, "api_key": self.gemini_api_key, "model": self.gemini_model, "enabled": True})
         return providers
 
     @property
     def has_multiple_providers(self) -> bool:
-        """Whether more than one search provider is configured."""
         return len(self.get_search_providers()) > 1
 
     @property
@@ -233,21 +189,18 @@ class Config:
         log_dir = Path(log_dir_str)
         if log_dir.is_absolute():
             return log_dir
-
         home_log_dir = Path.home() / ".config" / "grok-search" / log_dir_str
         try:
             home_log_dir.mkdir(parents=True, exist_ok=True)
             return home_log_dir
         except OSError:
             pass
-
         cwd_log_dir = Path.cwd() / log_dir_str
         try:
             cwd_log_dir.mkdir(parents=True, exist_ok=True)
             return cwd_log_dir
         except OSError:
             pass
-
         tmp_log_dir = Path("/tmp") / "grok-search" / log_dir_str
         tmp_log_dir.mkdir(parents=True, exist_ok=True)
         return tmp_log_dir
@@ -265,12 +218,7 @@ class Config:
     def grok_model(self) -> str:
         if self._cached_model is not None:
             return self._cached_model
-
-        model = (
-            os.getenv("GROK_MODEL")
-            or self._load_config_file().get("model")
-            or self._DEFAULT_MODEL
-        )
+        model = os.getenv("GROK_MODEL") or self._load_config_file().get("model") or self._DEFAULT_MODEL
         self._cached_model = self._apply_model_suffix(model)
         return self._cached_model
 
@@ -282,13 +230,11 @@ class Config:
 
     @staticmethod
     def _mask_api_key(key: str) -> str:
-        """脱敏显示 API Key，只显示前后各 4 个字符"""
         if not key or len(key) <= 8:
             return "***"
         return f"{key[:4]}{'*' * (len(key) - 8)}{key[-4:]}"
 
     def get_config_info(self) -> dict:
-        """获取配置信息（API Key 已脱敏）"""
         try:
             api_url = self.grok_api_url
             api_key_raw = self.grok_api_key
@@ -298,7 +244,6 @@ class Config:
             api_url = "未配置"
             api_key_masked = "未配置"
             config_status = f"❌ 配置错误: {str(e)}"
-
         return {
             "GROK_API_URL": api_url,
             "GROK_API_KEY": api_key_masked,
@@ -308,9 +253,7 @@ class Config:
             "GROK_LOG_DIR": str(self.log_dir),
             "TAVILY_API_URL": self.tavily_api_url,
             "TAVILY_ENABLED": self.tavily_enabled,
-            "TAVILY_API_KEY": ", ".join(
-                self._mask_api_key(key) for key in self.tavily_api_keys
-            ) if self.tavily_api_keys else "未配置",
+            "TAVILY_API_KEY": ", ".join(self._mask_api_key(key) for key in self.tavily_api_keys) if self.tavily_api_keys else "未配置",
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
             "GEMINI_API_URL": self.gemini_api_url or "未配置",
@@ -322,22 +265,11 @@ class Config:
             "REASONING_EFFORT": self.reasoning_effort or "none",
             "OPENAI_API_FORMAT": self.openai_api_format,
             "providers": [
-                {
-                    "name": "Grok",
-                    "status": "✅ 已配置" if api_url != "未配置" else "❌ 未配置",
-                    "api_url": api_url,
-                    "api_key": api_key_masked,
-                    "model": self.grok_model,
-                },
-                {
-                    "name": "Gemini",
-                    "status": "✅ 已配置" if self.gemini_enabled else "ℹ️ 未配置（可选）",
-                    "api_url": self.gemini_api_url or "未配置",
-                    "api_key": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置",
-                    "model": self.gemini_model if self.gemini_enabled else "未配置",
-                },
+                {"name": "Grok", "status": "✅ 已配置" if api_url != "未配置" else "❌ 未配置", "api_url": api_url, "api_key": api_key_masked, "model": self.grok_model},
+                {"name": "Gemini", "status": "✅ 已配置" if self.gemini_enabled else "ℹ️ 未配置（可选）", "api_url": self.gemini_api_url or "未配置", "api_key": self._mask_api_key(self.gemini_api_key) if self.gemini_api_key else "未配置", "model": self.gemini_model if self.gemini_enabled else "未配置"},
             ],
-            "config_status": config_status
+            "config_status": config_status,
         }
+
 
 config = Config()
