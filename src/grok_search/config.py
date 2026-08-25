@@ -169,8 +169,8 @@ class Config:
         Passed as reasoning_effort in the API payload. Supported values:
         'none'/'off'/'false' → disabled (returns None)
         Other values (e.g. 'low', 'medium', 'high') → passed through to upstream.
-        Default: 'high'"""
-        value = os.getenv("REASONING_EFFORT", "high").strip().lower()
+        Default: 'low'"""
+        value = os.getenv("REASONING_EFFORT", "low").strip().lower()
         if value in ("none", "off", "false"):
             return None
         return value
