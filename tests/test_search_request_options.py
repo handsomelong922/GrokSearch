@@ -4,7 +4,7 @@ from grok_search.providers.openai_compatible import OpenAICompatibleSearchProvid
 
 
 @pytest.mark.asyncio
-async def test_search_enables_web_search_and_high_reasoning_by_default(monkeypatch):
+async def test_search_enables_web_search_and_low_reasoning_by_default(monkeypatch):
     monkeypatch.delenv("OPENAI_API_FORMAT", raising=False)
     monkeypatch.delenv("ENABLE_WEB_SEARCH", raising=False)
     monkeypatch.delenv("REASONING_EFFORT", raising=False)
@@ -28,7 +28,7 @@ async def test_search_enables_web_search_and_high_reasoning_by_default(monkeypat
     assert captured["payload"]["input"][0]["content"][0]["type"] == "input_text"
     assert captured["payload"]["tools"] == [{"type": "web_search"}]
     assert captured["payload"]["tool_choice"] == "auto"
-    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert captured["payload"]["reasoning"] == {"effort": "low"}
     assert "messages" not in captured["payload"]
 
 
@@ -108,7 +108,7 @@ async def test_chat_completions_fallback_preserves_legacy_fields(monkeypatch):
     assert captured["payload"]["messages"][1]["role"] == "user"
     assert captured["payload"]["tools"] == [{"type": "web_search"}]
     assert captured["payload"]["tool_choice"] == "auto"
-    assert captured["payload"]["reasoning_effort"] == "high"
+    assert captured["payload"]["reasoning_effort"] == "low"
     assert "input" not in captured["payload"]
 
 
