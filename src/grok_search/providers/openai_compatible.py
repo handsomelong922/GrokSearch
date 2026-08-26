@@ -78,6 +78,10 @@ class ResponseFailedError(Exception):
 
 def _is_retryable_exception(exc) -> bool:
     """检查异常是否可重试"""
+    # A read timeout means an already-open streaming response produced no data
+    # for the configured interval. Retrying would multiply the stall duration.
+    if isinstance(exc, httpx.ReadTimeout):
+        return False
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError, httpx.RemoteProtocolError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
@@ -461,7 +465,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         """执行带重试机制的流式 HTTP 请求"""
         connect_timeout = float(os.getenv("GROK_HTTP_CONNECT_TIMEOUT_SECONDS", "10"))
-        read_timeout = float(os.getenv("GROK_HTTP_READ_TIMEOUT_SECONDS", "240"))
+        read_timeout = float(os.getenv("GROK_HTTP_READ_TIMEOUT_SECONDS", "10"))
         write_timeout = float(os.getenv("GROK_HTTP_WRITE_TIMEOUT_SECONDS", "20"))
         timeout = httpx.Timeout(
             connect=max(1.0, connect_timeout),
