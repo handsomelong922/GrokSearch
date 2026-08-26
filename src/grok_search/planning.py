@@ -126,6 +126,74 @@ class PlanningEngine:
     def get_session(self, session_id: str) -> PlanningSession | None:
         return self._sessions.get(session_id)
 
+    @staticmethod
+    def _tool_mappings(session: PlanningSession) -> list[dict]:
+        record = session.phases.get("tool_selection")
+        if not record or not isinstance(record.data, list):
+            return []
+        return [item for item in record.data if isinstance(item, dict)]
+
+    @staticmethod
+    def _sub_queries(session: PlanningSession) -> dict[str, dict]:
+        record = session.phases.get("query_decomposition")
+        if not record or not isinstance(record.data, list):
+            return {}
+        return {
+            item["id"]: item
+            for item in record.data
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+
+    @classmethod
+    def _independent_web_search_ids(cls, session: PlanningSession) -> set[str]:
+        web_ids = {
+            item.get("sub_query_id")
+            for item in cls._tool_mappings(session)
+            if item.get("tool") == "web_search" and isinstance(item.get("sub_query_id"), str)
+        }
+        sub_queries = cls._sub_queries(session)
+        if not sub_queries:
+            return web_ids
+        return {
+            sub_query_id
+            for sub_query_id in web_ids
+            if not (sub_queries.get(sub_query_id, {}).get("depends_on") or [])
+        }
+
+    @classmethod
+    def _add_parallel_search_guidance(cls, result: dict, session: PlanningSession, target: str, phase_data) -> None:
+        """Tell the caller when independent searches must be consolidated.
+
+        Separate MCP tool calls may be serialized or staggered by the host even
+        when the model emits them in one turn. A single batch_web_search call
+        keeps concurrency inside this server, where asyncio.gather controls it.
+        """
+        should_batch = False
+        independent_web_ids = cls._independent_web_search_ids(session)
+
+        if target == "execution_order" and isinstance(phase_data, dict):
+            parallel_groups = phase_data.get("parallel") or []
+            should_batch = any(
+                len([
+                    sub_query_id for sub_query_id in group
+                    if sub_query_id in independent_web_ids
+                ]) > 1
+                for group in parallel_groups
+                if isinstance(group, list)
+            )
+
+        if target == "tool_selection":
+            should_batch = len(independent_web_ids) > 1
+
+        if should_batch:
+            result["parallel_search_tool"] = "batch_web_search"
+            result["parallel_search_instruction"] = (
+                "For two or more independent web-search sub-queries, use one "
+                "batch_web_search call containing all queries in a single MCP call. "
+                "Do not emit multiple web_search calls for the same independent "
+                "parallel group; MCP hosts may serialize separate tool calls."
+            )
+
     def process_phase(
         self,
         phase: str,
@@ -201,6 +269,8 @@ class PlanningEngine:
         remaining = [p for p in PHASE_NAMES if p in session.required_phases() and p not in session.phases]
         if remaining:
             result["phases_remaining"] = remaining
+
+        self._add_parallel_search_guidance(result, session, target, phase_data)
 
         if complete:
             result["executable_plan"] = session.build_executable_plan()

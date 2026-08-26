@@ -15,24 +15,27 @@ from . import server
     name="batch_web_search",
     output_schema=None,
     description="""
-    Run multiple independent web searches concurrently in one MCP call.
+    Run multiple independent web searches concurrently in ONE MCP call.
 
-    Prefer this tool when two or more independent sub-queries can be searched
-    at the same time. All queries are started concurrently on the server with
-    asyncio.gather, so parallelism does not depend on the MCP client issuing
-    multiple web_search tool calls concurrently.
+    IMPORTANT: When two or more independent web searches are needed in the same
+    execution round, use this tool once with all queries. Do NOT emit multiple
+    separate web_search tool calls for those independent queries. Some MCP hosts
+    serialize or stagger separate tool calls even when the model emits them in
+    one turn; this tool guarantees that the Grok/Gemini upstream requests are
+    started concurrently inside this server with asyncio.gather.
 
+    Use ordinary web_search only when exactly one search query is needed.
     Returns results in the same order as the input queries.
     """,
     meta={
-        "version": "1.0.0",
+        "version": "1.1.0",
         "author": "guda.studio",
     },
 )
 async def batch_web_search(
     queries: Annotated[
         list[str],
-        "Independent, self-contained search queries to execute concurrently."
+        "Two or more independent, self-contained search queries to execute concurrently in one server-side batch."
     ],
     platform: Annotated[
         str,
