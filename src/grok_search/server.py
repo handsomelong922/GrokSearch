@@ -180,10 +180,6 @@ _RESULT_CACHE = SearchResultCache()
 _WEB_SEARCH_SINGLE_FLIGHT = _SearchSingleFlight()
 
 
-# Limit concurrent Grok API calls to avoid queue buildup at the upstream proxy.
-_SEARCH_CONCURRENCY_SEMAPHORE = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_SEARCHES", "2")))
-
-
 async def _fetch_available_models(api_url: str, api_key: str) -> list[str]:
     import httpx
 
@@ -365,16 +361,7 @@ async def _execute_web_search(query: str, platform: str, model: str,
 
     # 并行执行搜索任务
     async def _safe_providers() -> SearchBatchResult:
-        """Run the Grok search with concurrency limiting.
-
-        The semaphore prevents too many simultaneous connections to the upstream
-        proxy, which has a hard 90s connection limit and limited concurrency.
-        Without this, parallel calls queue up at the proxy, each waiting for
-        the previous one to finish, causing total time = sum of individual times.
-        """
-        async with _SEARCH_CONCURRENCY_SEMAPHORE:
-            return await router.run_search(query, platform, mode=mode,
-                                            model_override=model_override)
+        return await router.run_search(query, platform, mode=mode, model_override=model_override)
 
     async def _safe_tavily() -> tuple[list[dict] | None, str | None]:
         try:
