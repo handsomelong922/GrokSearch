@@ -63,19 +63,8 @@ async def test_grok_and_gemini_use_independent_read_timeouts(monkeypatch):
     assert captured[1].read == 15.0
 
 
-def test_grok_read_timeout_is_not_retried_but_gemini_can_retry(monkeypatch):
-    grok = OpenAICompatibleSearchProvider(
-        api_url="https://grok.example/v1",
-        api_key="test-key",
-        provider_name="Grok",
-    )
-    gemini = OpenAICompatibleSearchProvider(
-        api_url="https://gemini.example/v1",
-        api_key="test-key",
-        provider_name="Gemini",
-    )
-
+def test_read_timeout_remains_non_retryable():
+    """A stalled open stream should not multiply its timeout through retries."""
     exc = httpx.ReadTimeout("stream stalled")
 
-    assert grok._is_retryable_exception(exc) is False
-    assert gemini._is_retryable_exception(exc) is True
+    assert openai_compatible._is_retryable_exception(exc) is False
