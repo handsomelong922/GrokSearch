@@ -39,20 +39,52 @@ async def test_public_web_search_starts_distinct_queries_concurrently(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_public_web_search_supports_one_item_list(monkeypatch):
+async def test_public_web_search_accepts_legacy_string_and_preserves_shape(monkeypatch):
     calls = []
+    expected = {
+        "session_id": "abc",
+        "content": "legacy result",
+        "sources_count": 2,
+        "providers_used": ["Grok"],
+    }
 
     async def fake_single_search(query, platform="", model="", extra_sources=3, mode="balanced"):
         calls.append(query)
+        return expected
+
+    monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_search)
+
+    result = await entrypoint.web_search("single query", extra_sources=0)
+
+    assert calls == ["single query"]
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_batch_web_search_alias_still_exists_and_runs_concurrently(monkeypatch):
+    started = []
+    all_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_single_search(query, platform="", model="", extra_sources=3, mode="balanced"):
+        started.append(query)
+        if len(started) == 2:
+            all_started.set()
+        await release.wait()
         return {"content": query, "sources_count": 0}
 
     monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_search)
 
-    result = await entrypoint.web_search(["single query"], extra_sources=0)
+    task = asyncio.create_task(
+        entrypoint.batch_web_search(["q1", "q2"], extra_sources=0)
+    )
+    await asyncio.wait_for(all_started.wait(), timeout=0.1)
+    assert started == ["q1", "q2"]
 
-    assert calls == ["single query"]
-    assert result["count"] == 1
-    assert result["results"][0]["content"] == "single query"
+    release.set()
+    result = await task
+    assert result["count"] == 2
+    assert [item["content"] for item in result["results"]] == ["q1", "q2"]
 
 
 @pytest.mark.asyncio
