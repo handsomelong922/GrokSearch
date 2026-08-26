@@ -162,11 +162,11 @@ class PlanningEngine:
 
     @classmethod
     def _add_parallel_search_guidance(cls, result: dict, session: PlanningSession, target: str, phase_data) -> None:
-        """Tell the caller when independent searches must be consolidated.
+        """Tell the caller when independent searches must share one MCP call.
 
         Separate MCP tool calls may be serialized or staggered by the host even
-        when the model emits them in one turn. A single batch_web_search call
-        keeps concurrency inside this server, where asyncio.gather controls it.
+        when the model emits them in one turn. The public web_search accepts a
+        query array so concurrency stays inside this server.
         """
         should_batch = False
         independent_web_ids = cls._independent_web_search_ids(session)
@@ -186,12 +186,13 @@ class PlanningEngine:
             should_batch = len(independent_web_ids) > 1
 
         if should_batch:
-            result["parallel_search_tool"] = "batch_web_search"
+            result["parallel_search_tool"] = "web_search"
             result["parallel_search_instruction"] = (
                 "For two or more independent web-search sub-queries, use one "
-                "batch_web_search call containing all queries in a single MCP call. "
-                "Do not emit multiple web_search calls for the same independent "
-                "parallel group; MCP hosts may serialize separate tool calls."
+                "web_search call with a query array containing all same-round "
+                "queries in a single MCP call. Do not emit multiple web_search "
+                "calls for that independent group; MCP hosts may serialize "
+                "separate tool calls."
             )
 
     def process_phase(

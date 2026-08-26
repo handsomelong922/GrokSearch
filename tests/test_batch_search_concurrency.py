@@ -7,22 +7,22 @@ from grok_search.planning import PlanningEngine
 
 
 @pytest.mark.asyncio
-async def test_batch_web_search_starts_distinct_queries_concurrently(monkeypatch):
+async def test_public_web_search_starts_distinct_queries_concurrently(monkeypatch):
     started = []
     all_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_web_search(query, platform="", model="", extra_sources=3, mode="balanced"):
+    async def fake_single_search(query, platform="", model="", extra_sources=3, mode="balanced"):
         started.append(query)
         if len(started) == 4:
             all_started.set()
         await release.wait()
         return {"content": query, "sources_count": 0}
 
-    monkeypatch.setattr(entrypoint.server, "web_search", fake_web_search)
+    monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_search)
 
     task = asyncio.create_task(
-        entrypoint.batch_web_search(
+        entrypoint.web_search(
             ["q1", "q2", "q3", "q4"],
             extra_sources=0,
         )
@@ -39,8 +39,25 @@ async def test_batch_web_search_starts_distinct_queries_concurrently(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_batch_web_search_rejects_empty_queries(monkeypatch):
-    result = await entrypoint.batch_web_search(["", "   "], extra_sources=0)
+async def test_public_web_search_supports_one_item_list(monkeypatch):
+    calls = []
+
+    async def fake_single_search(query, platform="", model="", extra_sources=3, mode="balanced"):
+        calls.append(query)
+        return {"content": query, "sources_count": 0}
+
+    monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_search)
+
+    result = await entrypoint.web_search(["single query"], extra_sources=0)
+
+    assert calls == ["single query"]
+    assert result["count"] == 1
+    assert result["results"][0]["content"] == "single query"
+
+
+@pytest.mark.asyncio
+async def test_public_web_search_rejects_empty_query_list(monkeypatch):
+    result = await entrypoint.web_search(["", "   "], extra_sources=0)
 
     assert result["count"] == 0
     assert result["results"] == []
@@ -60,7 +77,7 @@ def _add_web_mapping(engine: PlanningEngine, session_id: str, sub_query_id: str)
     )
 
 
-def test_execution_plan_requires_batch_tool_for_parallel_searches():
+def test_execution_plan_uses_one_array_web_search_for_parallel_searches():
     engine = PlanningEngine()
     for sub_query_id in ("sq1", "sq2", "sq3"):
         _add_web_mapping(engine, "p1", sub_query_id)
@@ -76,9 +93,9 @@ def test_execution_plan_requires_batch_tool_for_parallel_searches():
         },
     )
 
-    assert result["parallel_search_tool"] == "batch_web_search"
+    assert result["parallel_search_tool"] == "web_search"
     assert "single MCP call" in result["parallel_search_instruction"]
-    assert "Do not emit multiple web_search calls" in result["parallel_search_instruction"]
+    assert "query array" in result["parallel_search_instruction"]
 
 
 def test_execution_plan_does_not_batch_non_search_parallel_tools():
@@ -110,7 +127,7 @@ def test_execution_plan_does_not_batch_non_search_parallel_tools():
     assert "parallel_search_tool" not in result
 
 
-def test_level_two_independent_web_search_mappings_require_batch_tool():
+def test_level_two_independent_web_search_mappings_use_array_web_search():
     engine = PlanningEngine()
     for sub_query in (
         {"id": "sq1", "goal": "first", "expected_output": "one", "boundary": "only first"},
@@ -124,14 +141,9 @@ def test_level_two_independent_web_search_mappings_require_batch_tool():
             phase_data=sub_query,
         )
 
-    result = None
-    for sub_query_id in ("sq1", "sq2", "sq3"):
-        _add_web_mapping(engine, "p2", sub_query_id)
-        result = engine.get_session("p2")
-
     planning_result = engine.process_phase(
         phase="tool_selection",
-        thought="refresh final mapping",
+        thought="set mappings",
         session_id="p2",
         is_revision=True,
         phase_data=[
@@ -141,11 +153,11 @@ def test_level_two_independent_web_search_mappings_require_batch_tool():
         ],
     )
 
-    assert result is not None
-    assert planning_result["parallel_search_tool"] == "batch_web_search"
+    assert planning_result["parallel_search_tool"] == "web_search"
+    assert "query array" in planning_result["parallel_search_instruction"]
 
 
-def test_dependent_web_search_mappings_are_not_forced_into_one_batch():
+def test_dependent_web_search_mappings_are_not_forced_into_one_array_call():
     engine = PlanningEngine()
     engine.process_phase(
         phase="query_decomposition",
