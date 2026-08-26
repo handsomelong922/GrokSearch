@@ -35,7 +35,7 @@ class SubQuery(BaseModel):
     id: str = Field(description="Unique identifier (e.g., 'sq1')")
     goal: str
     expected_output: str = Field(description="What a successful result looks like")
-    tool_hint: Optional[str] = Field(default=None, description="Suggested tool: web_search | web_fetch | web_map")
+    tool_hint: Optional[str] = Field(default=None, description="Suggested tool: batch_web_search | web_search | web_fetch | web_map")
     boundary: str = Field(description="What this sub-query explicitly excludes — MUST state mutual exclusion with sibling sub-queries, not just the broader domain")
     depends_on: Optional[list[str]] = Field(default=None, description="IDs of prerequisite sub-queries")
 
@@ -56,7 +56,7 @@ class StrategyOutput(BaseModel):
 
 class ToolPlanItem(BaseModel):
     sub_query_id: str
-    tool: Literal["web_search", "web_fetch", "web_map"]
+    tool: Literal["batch_web_search", "web_search", "web_fetch", "web_map"]
     reason: str
     params: Optional[dict] = Field(default=None, description="Tool-specific parameters")
 
@@ -149,7 +149,8 @@ class PlanningEngine:
         web_ids = {
             item.get("sub_query_id")
             for item in cls._tool_mappings(session)
-            if item.get("tool") == "web_search" and isinstance(item.get("sub_query_id"), str)
+            if item.get("tool") in {"web_search", "batch_web_search"}
+            and isinstance(item.get("sub_query_id"), str)
         }
         sub_queries = cls._sub_queries(session)
         if not sub_queries:
@@ -165,8 +166,8 @@ class PlanningEngine:
         """Tell the caller when independent searches must share one MCP call.
 
         Separate MCP tool calls may be serialized or staggered by the host even
-        when the model emits them in one turn. The public web_search accepts a
-        query array so concurrency stays inside this server.
+        when the model emits them in one turn. batch_web_search keeps concurrency
+        inside this server and is also valid for a one-item query list.
         """
         should_batch = False
         independent_web_ids = cls._independent_web_search_ids(session)
@@ -186,13 +187,13 @@ class PlanningEngine:
             should_batch = len(independent_web_ids) > 1
 
         if should_batch:
-            result["parallel_search_tool"] = "web_search"
+            result["parallel_search_tool"] = "batch_web_search"
             result["parallel_search_instruction"] = (
                 "For two or more independent web-search sub-queries, use one "
-                "web_search call with a query array containing all same-round "
-                "queries in a single MCP call. Do not emit multiple web_search "
-                "calls for that independent group; MCP hosts may serialize "
-                "separate tool calls."
+                "batch_web_search call containing all same-round queries in a "
+                "single MCP call. Do not emit multiple separate search calls; "
+                "MCP hosts may serialize them. batch_web_search also supports "
+                "a one-item list for a single lookup."
             )
 
     def process_phase(
