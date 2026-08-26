@@ -1,10 +1,10 @@
-"""Application entrypoint with server-controlled search concurrency.
+"""Application entrypoint with backward-compatible search concurrency.
 
-The base server implements the single-query search pipeline. At startup this
-module removes that scalar MCP tool from the public tool list and exposes one
-array-based ``web_search`` tool instead. This keeps multi-query concurrency
-inside the server rather than relying on an MCP host to execute separate tool
-calls concurrently.
+The base server owns the fully featured single-query search pipeline. This
+module keeps that implementation as an internal helper, replaces the public
+``web_search`` registration with a compatibility wrapper that accepts either a
+legacy string query or a list of queries, and also keeps ``batch_web_search``
+available for clients that already know that tool name.
 """
 
 import asyncio
@@ -13,69 +13,28 @@ from typing import Annotated
 from . import server
 
 
-# Keep the existing, fully featured single-query implementation as an internal
-# helper before replacing its public MCP registration.
+# Preserve the existing single-query implementation as the canonical internal
+# execution path. Public wrappers below only normalize MCP input shapes.
 _single_web_search = server.web_search
 
-# FastMCP >=2.3.4 supports removing tools through the local provider. The
-# project installs current FastMCP releases, and doing this at startup means
-# clients only discover the unified array-based web_search below.
+# Replace the original public registration so ``web_search`` can accept both
+# the historical scalar form and the newer list form without changing the
+# underlying single-query implementation.
 server.mcp.local_provider.remove_tool("web_search")
 
 
-@server.mcp.tool(
-    name="web_search",
-    output_schema=None,
-    description="""
-    Search the web for one or more independent queries.
-
-    IMPORTANT CONCURRENCY CONTRACT:
-    - The `query` argument is ALWAYS an array of strings.
-    - For one search, send one item: ["query"].
-    - For two or more independent searches needed in the same execution round,
-      put ALL of them in ONE `web_search` call: ["query A", "query B", ...].
-    - Do NOT emit multiple separate `web_search` tool calls for independent
-      searches. Some MCP hosts serialize separate tool calls.
-
-    This server starts every query in the array concurrently with
-    `asyncio.gather`. Each query still runs the existing Grok/Gemini provider
-    pipeline, cache, timeout, source collection, and fallback behavior.
-
-    Returns `results` in the same order as the input query array.
-    """,
-    meta={
-        "version": "3.0.0",
-        "author": "guda.studio",
-    },
-)
-async def web_search(
-    query: Annotated[
-        list[str],
-        "Array of self-contained search queries. Put all independent same-round searches in this one array."
-    ],
-    platform: Annotated[
-        str,
-        "Optional target platform applied to every query. Leave empty for general web search."
-    ] = "",
-    model: Annotated[
-        str,
-        "Optional model override applied to every query."
-    ] = "",
-    extra_sources: Annotated[
-        int,
-        "Number of additional Tavily/Firecrawl reference results per query. Set 0 to disable."
-    ] = 3,
-    mode: Annotated[
-        str,
-        "Search mode applied to every query: fast, balanced, or deep."
-    ] = "balanced",
+async def _run_batch(
+    queries: list[str],
+    platform: str = "",
+    model: str = "",
+    extra_sources: int = 3,
+    mode: str = "balanced",
 ) -> dict:
-    cleaned = [item.strip() for item in query if isinstance(item, str) and item.strip()]
+    """Execute independent queries concurrently while preserving input order."""
+    cleaned = [item.strip() for item in queries if isinstance(item, str) and item.strip()]
     if not cleaned:
         return {"results": [], "count": 0, "error": "no_valid_queries"}
 
-    # Bound one request to prevent accidental unbounded fan-out while allowing
-    # normal research batches to execute fully in parallel.
     cleaned = cleaned[:10]
 
     async def _safe_one(item: str) -> dict:
@@ -101,6 +60,114 @@ async def web_search(
 
     results = await asyncio.gather(*(_safe_one(item) for item in cleaned))
     return {"results": results, "count": len(results)}
+
+
+@server.mcp.tool(
+    name="web_search",
+    output_schema=None,
+    description="""
+    Search the web using either the legacy single-query form or a concurrent
+    multi-query form.
+
+    Backward compatibility:
+    - `query` may be a STRING. This behaves exactly like the historical
+      web_search tool and returns the historical single-search result shape.
+    - `query` may be an ARRAY of strings. Independent queries in that array are
+      started concurrently inside this server with asyncio.gather.
+
+    For two or more independent searches in the same execution round, prefer a
+    single array call such as ["query A", "query B"] instead of multiple
+    separate web_search calls, because some MCP hosts serialize separate calls.
+    """,
+    meta={
+        "version": "3.1.0",
+        "author": "guda.studio",
+    },
+)
+async def web_search(
+    query: Annotated[
+        str | list[str],
+        "A single search query string, or an array of independent queries to run concurrently."
+    ],
+    platform: Annotated[
+        str,
+        "Optional target platform. Leave empty for general web search."
+    ] = "",
+    model: Annotated[
+        str,
+        "Optional model override."
+    ] = "",
+    extra_sources: Annotated[
+        int,
+        "Number of additional Tavily/Firecrawl reference results per query. Set 0 to disable."
+    ] = 3,
+    mode: Annotated[
+        str,
+        "Search mode: fast, balanced, or deep."
+    ] = "balanced",
+) -> dict:
+    if isinstance(query, str):
+        return await _single_web_search(
+            query=query,
+            platform=platform,
+            model=model,
+            extra_sources=extra_sources,
+            mode=mode,
+        )
+
+    return await _run_batch(
+        queries=query,
+        platform=platform,
+        model=model,
+        extra_sources=extra_sources,
+        mode=mode,
+    )
+
+
+@server.mcp.tool(
+    name="batch_web_search",
+    output_schema=None,
+    description="""
+    Backward-compatible batch search alias.
+
+    Run two or more independent web searches concurrently inside one MCP call.
+    Existing clients that already call batch_web_search can continue using this
+    tool unchanged. Results preserve input order.
+    """,
+    meta={
+        "version": "1.2.0",
+        "author": "guda.studio",
+    },
+)
+async def batch_web_search(
+    queries: Annotated[
+        list[str],
+        "Independent, self-contained search queries to execute concurrently."
+    ],
+    platform: Annotated[
+        str,
+        "Optional target platform applied to every query."
+    ] = "",
+    model: Annotated[
+        str,
+        "Optional model override applied to every query."
+    ] = "",
+    extra_sources: Annotated[
+        int,
+        "Additional Tavily/Firecrawl references per query. Set 0 to disable."
+    ] = 3,
+    mode: Annotated[
+        str,
+        "Search mode applied to every query: fast, balanced, or deep."
+    ] = "balanced",
+) -> dict:
+    return await _run_batch(
+        queries=queries,
+        platform=platform,
+        model=model,
+        extra_sources=extra_sources,
+        mode=mode,
+    )
 
 
 def main():
