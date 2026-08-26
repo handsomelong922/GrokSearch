@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from grok_search import server
+from grok_search import entrypoint
 
 
 @pytest.mark.asyncio
@@ -11,17 +11,17 @@ async def test_batch_web_search_starts_distinct_queries_concurrently(monkeypatch
     all_started = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_cached_search(query, platform, model, extra_sources, mode):
+    async def fake_web_search(query, platform="", model="", extra_sources=3, mode="balanced"):
         started.append(query)
         if len(started) == 4:
             all_started.set()
         await release.wait()
         return {"content": query, "sources_count": 0}
 
-    monkeypatch.setattr(server, "_run_web_search_cached", fake_cached_search)
+    monkeypatch.setattr(entrypoint.server, "web_search", fake_web_search)
 
     task = asyncio.create_task(
-        server.batch_web_search(
+        entrypoint.batch_web_search(
             ["q1", "q2", "q3", "q4"],
             extra_sources=0,
         )
@@ -38,16 +38,9 @@ async def test_batch_web_search_starts_distinct_queries_concurrently(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_web_search_uses_shared_cached_execution_helper(monkeypatch):
-    calls = []
+async def test_batch_web_search_rejects_empty_queries(monkeypatch):
+    result = await entrypoint.batch_web_search(["", "   "], extra_sources=0)
 
-    async def fake_cached_search(query, platform, model, extra_sources, mode):
-        calls.append((query, platform, model, extra_sources, mode))
-        return {"content": "ok", "sources_count": 0}
-
-    monkeypatch.setattr(server, "_run_web_search_cached", fake_cached_search)
-
-    result = await server.web_search("single", extra_sources=0)
-
-    assert result["content"] == "ok"
-    assert calls == [("single", "", "", 0, "balanced")]
+    assert result["count"] == 0
+    assert result["results"] == []
+    assert result["error"] == "no_valid_queries"
