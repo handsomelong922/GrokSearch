@@ -25,4 +25,4 @@ dev = [
 where = ["src"]
 
 [project.scripts]
-grok-search = "grok_search.server:main"
+grok-search = "grok_search.entrypoint:main"
