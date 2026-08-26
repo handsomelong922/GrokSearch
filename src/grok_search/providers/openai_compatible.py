@@ -138,7 +138,9 @@ async def _get_shared_client(timeout: httpx.Timeout) -> httpx.AsyncClient:
     """Get or create the shared HTTP client with connection pooling.
 
     Parallel calls reuse the same connection pool, avoiding redundant
-    TCP/TLS handshakes.
+    TCP/TLS handshakes. Each request still passes its own timeout explicitly,
+    so the first provider to create this client cannot determine the timeout
+    used by other providers.
     """
     global _shared_client
     async with _shared_client_lock:
@@ -163,6 +165,25 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
 
     def get_provider_name(self) -> str:
         return self._provider_name
+
+    def _read_timeout_seconds(self) -> float:
+        """Return a provider-specific streaming read timeout.
+
+        Grok keeps the aggressive 10s stalled-stream cutoff. Gemini gets a
+        slightly larger 15s window because its first streaming event can be
+        slower, especially when it performs web search before producing text.
+        """
+        if self._provider_name.strip().lower() == "gemini":
+            raw = os.getenv("GEMINI_HTTP_READ_TIMEOUT_SECONDS", "15")
+            default = 15.0
+        else:
+            raw = os.getenv("GROK_HTTP_READ_TIMEOUT_SECONDS", "10")
+            default = 10.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(1.0, value)
 
     def _build_payload(self, system_prompt: str, user_prompt: str, *, search: bool = False) -> dict:
         """Build a request in the configured OpenAI-compatible format."""
@@ -465,11 +486,11 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         """执行带重试机制的流式 HTTP 请求"""
         connect_timeout = float(os.getenv("GROK_HTTP_CONNECT_TIMEOUT_SECONDS", "10"))
-        read_timeout = float(os.getenv("GROK_HTTP_READ_TIMEOUT_SECONDS", "10"))
+        read_timeout = self._read_timeout_seconds()
         write_timeout = float(os.getenv("GROK_HTTP_WRITE_TIMEOUT_SECONDS", "20"))
         timeout = httpx.Timeout(
             connect=max(1.0, connect_timeout),
-            read=max(10.0, read_timeout),
+            read=read_timeout,
             write=max(1.0, write_timeout),
             pool=None,
         )
@@ -493,6 +514,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                     f"{self.api_url.rstrip('/')}/{endpoint}",
                     headers=headers,
                     json=payload,
+                    timeout=timeout,
                 ) as response:
                     response.raise_for_status()
                     return await parser(response, ctx)
