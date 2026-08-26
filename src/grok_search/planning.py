@@ -127,7 +127,41 @@ class PlanningEngine:
         return self._sessions.get(session_id)
 
     @staticmethod
-    def _add_parallel_search_guidance(result: dict, session: PlanningSession, target: str, phase_data) -> None:
+    def _tool_mappings(session: PlanningSession) -> list[dict]:
+        record = session.phases.get("tool_selection")
+        if not record or not isinstance(record.data, list):
+            return []
+        return [item for item in record.data if isinstance(item, dict)]
+
+    @staticmethod
+    def _sub_queries(session: PlanningSession) -> dict[str, dict]:
+        record = session.phases.get("query_decomposition")
+        if not record or not isinstance(record.data, list):
+            return {}
+        return {
+            item["id"]: item
+            for item in record.data
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+
+    @classmethod
+    def _independent_web_search_ids(cls, session: PlanningSession) -> set[str]:
+        web_ids = {
+            item.get("sub_query_id")
+            for item in cls._tool_mappings(session)
+            if item.get("tool") == "web_search" and isinstance(item.get("sub_query_id"), str)
+        }
+        sub_queries = cls._sub_queries(session)
+        if not sub_queries:
+            return web_ids
+        return {
+            sub_query_id
+            for sub_query_id in web_ids
+            if not (sub_queries.get(sub_query_id, {}).get("depends_on") or [])
+        }
+
+    @classmethod
+    def _add_parallel_search_guidance(cls, result: dict, session: PlanningSession, target: str, phase_data) -> None:
         """Tell the caller when independent searches must be consolidated.
 
         Separate MCP tool calls may be serialized or staggered by the host even
@@ -135,22 +169,21 @@ class PlanningEngine:
         keeps concurrency inside this server, where asyncio.gather controls it.
         """
         should_batch = False
+        independent_web_ids = cls._independent_web_search_ids(session)
 
         if target == "execution_order" and isinstance(phase_data, dict):
             parallel_groups = phase_data.get("parallel") or []
             should_batch = any(
-                isinstance(group, list) and len(group) > 1
+                len([
+                    sub_query_id for sub_query_id in group
+                    if sub_query_id in independent_web_ids
+                ]) > 1
                 for group in parallel_groups
+                if isinstance(group, list)
             )
 
         if target == "tool_selection":
-            record = session.phases.get("tool_selection")
-            mappings = record.data if record and isinstance(record.data, list) else []
-            web_search_count = sum(
-                1 for item in mappings
-                if isinstance(item, dict) and item.get("tool") == "web_search"
-            )
-            should_batch = web_search_count > 1
+            should_batch = len(independent_web_ids) > 1
 
         if should_batch:
             result["parallel_search_tool"] = "batch_web_search"
