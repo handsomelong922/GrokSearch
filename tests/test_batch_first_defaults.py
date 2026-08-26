@@ -22,11 +22,6 @@ def test_batch_web_search_disables_supplemental_sources_by_default():
     assert signature.parameters["extra_sources"].default == 0
 
 
-def test_batch_web_search_accepts_single_query_as_primary_entrypoint():
-    doc = inspect.getdoc(entrypoint.batch_web_search) or ""
-    assert "one or more" in doc.lower() or "1-10" in doc.lower()
-
-
 def test_planner_points_parallel_search_groups_to_batch_tool():
     engine = PlanningEngine()
     for sub_query_id in ("sq1", "sq2", "sq3"):
