@@ -126,6 +126,41 @@ class PlanningEngine:
     def get_session(self, session_id: str) -> PlanningSession | None:
         return self._sessions.get(session_id)
 
+    @staticmethod
+    def _add_parallel_search_guidance(result: dict, session: PlanningSession, target: str, phase_data) -> None:
+        """Tell the caller when independent searches must be consolidated.
+
+        Separate MCP tool calls may be serialized or staggered by the host even
+        when the model emits them in one turn. A single batch_web_search call
+        keeps concurrency inside this server, where asyncio.gather controls it.
+        """
+        should_batch = False
+
+        if target == "execution_order" and isinstance(phase_data, dict):
+            parallel_groups = phase_data.get("parallel") or []
+            should_batch = any(
+                isinstance(group, list) and len(group) > 1
+                for group in parallel_groups
+            )
+
+        if target == "tool_selection":
+            record = session.phases.get("tool_selection")
+            mappings = record.data if record and isinstance(record.data, list) else []
+            web_search_count = sum(
+                1 for item in mappings
+                if isinstance(item, dict) and item.get("tool") == "web_search"
+            )
+            should_batch = web_search_count > 1
+
+        if should_batch:
+            result["parallel_search_tool"] = "batch_web_search"
+            result["parallel_search_instruction"] = (
+                "For two or more independent web-search sub-queries, use one "
+                "batch_web_search call containing all queries in a single MCP call. "
+                "Do not emit multiple web_search calls for the same independent "
+                "parallel group; MCP hosts may serialize separate tool calls."
+            )
+
     def process_phase(
         self,
         phase: str,
@@ -201,6 +236,8 @@ class PlanningEngine:
         remaining = [p for p in PHASE_NAMES if p in session.required_phases() and p not in session.phases]
         if remaining:
             result["phases_remaining"] = remaining
+
+        self._add_parallel_search_guidance(result, session, target, phase_data)
 
         if complete:
             result["executable_plan"] = session.build_executable_plan()
