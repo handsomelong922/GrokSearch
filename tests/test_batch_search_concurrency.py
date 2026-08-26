@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -44,3 +45,59 @@ async def test_batch_web_search_rejects_empty_queries(monkeypatch):
     assert result["count"] == 0
     assert result["results"] == []
     assert result["error"] == "no_valid_queries"
+
+
+@pytest.mark.asyncio
+async def test_plan_execution_requires_batch_tool_for_parallel_searches(monkeypatch):
+    server = entrypoint.server
+
+    monkeypatch.setattr(server.planning_engine, "get_session", lambda _session_id: {"id": "p1"})
+    monkeypatch.setattr(
+        server.planning_engine,
+        "process_phase",
+        lambda **kwargs: {
+            "session_id": kwargs["session_id"],
+            "phase": kwargs["phase"],
+            "data": kwargs["phase_data"],
+        },
+    )
+
+    raw = await server.plan_execution(
+        session_id="p1",
+        thought="three independent searches can run together",
+        parallel_groups="sq1,sq2,sq3",
+        sequential="",
+        estimated_rounds=1,
+    )
+    result = json.loads(raw)
+
+    assert result["parallel_search_tool"] == "batch_web_search"
+    assert "single MCP call" in result["parallel_search_instruction"]
+    assert "Do not emit multiple web_search calls" in result["parallel_search_instruction"]
+
+
+@pytest.mark.asyncio
+async def test_plan_execution_does_not_force_batch_for_single_search(monkeypatch):
+    server = entrypoint.server
+
+    monkeypatch.setattr(server.planning_engine, "get_session", lambda _session_id: {"id": "p1"})
+    monkeypatch.setattr(
+        server.planning_engine,
+        "process_phase",
+        lambda **kwargs: {
+            "session_id": kwargs["session_id"],
+            "phase": kwargs["phase"],
+            "data": kwargs["phase_data"],
+        },
+    )
+
+    raw = await server.plan_execution(
+        session_id="p1",
+        thought="only one search",
+        parallel_groups="sq1",
+        sequential="",
+        estimated_rounds=1,
+    )
+    result = json.loads(raw)
+
+    assert "parallel_search_tool" not in result
