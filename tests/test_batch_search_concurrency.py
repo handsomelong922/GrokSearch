@@ -79,3 +79,75 @@ def test_execution_plan_does_not_force_batch_for_single_search():
     )
 
     assert "parallel_search_tool" not in result
+
+
+def test_level_two_independent_web_search_mappings_require_batch_tool():
+    engine = PlanningEngine()
+    for sub_query in (
+        {"id": "sq1", "goal": "first", "expected_output": "one", "boundary": "only first"},
+        {"id": "sq2", "goal": "second", "expected_output": "two", "boundary": "only second"},
+        {"id": "sq3", "goal": "third", "expected_output": "three", "boundary": "only third"},
+    ):
+        engine.process_phase(
+            phase="query_decomposition",
+            thought="independent sub-query",
+            session_id="p2",
+            phase_data=sub_query,
+        )
+
+    result = None
+    for sub_query_id in ("sq1", "sq2", "sq3"):
+        result = engine.process_phase(
+            phase="tool_selection",
+            thought="use web search",
+            session_id="p2",
+            phase_data={
+                "sub_query_id": sub_query_id,
+                "tool": "web_search",
+                "reason": "needs web evidence",
+            },
+        )
+
+    assert result is not None
+    assert result["parallel_search_tool"] == "batch_web_search"
+
+
+def test_dependent_web_search_mappings_are_not_forced_into_one_batch():
+    engine = PlanningEngine()
+    engine.process_phase(
+        phase="query_decomposition",
+        thought="first sub-query",
+        session_id="p3",
+        phase_data={
+            "id": "sq1",
+            "goal": "first",
+            "expected_output": "one",
+            "boundary": "only first",
+        },
+    )
+    engine.process_phase(
+        phase="query_decomposition",
+        thought="second depends on first",
+        session_id="p3",
+        phase_data={
+            "id": "sq2",
+            "goal": "second",
+            "expected_output": "two",
+            "boundary": "only second",
+            "depends_on": ["sq1"],
+        },
+    )
+    engine.process_phase(
+        phase="tool_selection",
+        thought="first web search",
+        session_id="p3",
+        phase_data={"sub_query_id": "sq1", "tool": "web_search", "reason": "first"},
+    )
+    result = engine.process_phase(
+        phase="tool_selection",
+        thought="dependent web search",
+        session_id="p3",
+        phase_data={"sub_query_id": "sq2", "tool": "web_search", "reason": "second"},
+    )
+
+    assert "parallel_search_tool" not in result
