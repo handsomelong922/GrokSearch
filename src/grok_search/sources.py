@@ -88,7 +88,10 @@ def split_answer_and_sources(text: str) -> tuple[str, list[dict]]:
     if split:
         return split
 
-    return raw, []
+    # Some upstream search providers emit citations inline instead of appending
+    # a dedicated Sources/References section. Preserve the answer verbatim but
+    # still surface those URLs through get_sources/session caching.
+    return raw, _extract_sources_from_text(raw)
 
 
 def _split_function_call_sources(text: str) -> tuple[str, list[dict]] | None:
