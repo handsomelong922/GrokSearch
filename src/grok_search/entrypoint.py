@@ -1,16 +1,52 @@
 """Application entrypoint with backward-compatible search concurrency.
 
 The base server owns the fully featured single-query search pipeline. This
-module keeps that implementation as an internal helper, replaces the public
-``web_search`` registration with a compatibility wrapper that accepts either a
-legacy string query or a list of queries, and also keeps ``batch_web_search``
-available as the preferred batch-first entrypoint.
+module keeps that implementation as an internal helper, replaces selected
+public registrations with compatibility wrappers, and keeps batch search as the
+preferred search entrypoint.
 """
 
 import asyncio
+import json
+import os
 from typing import Annotated
 
 from . import server
+
+
+def _apply_persisted_provider_model_overrides() -> None:
+    """Apply model overrides written by switch_model before routers initialize.
+
+    Deployment environment variables remain the baseline configuration. Only
+    explicit provider keys written by the provider-aware switch tool override
+    them, so legacy config files containing only ``model`` do not unexpectedly
+    change deployment behavior after an upgrade.
+    """
+    data = server.config._load_config_file()
+    if not isinstance(data, dict):
+        return
+
+    grok_model = data.get("GROK_MODEL")
+    gemini_model = data.get("GEMINI_MODEL")
+
+    if isinstance(grok_model, str) and grok_model.strip():
+        os.environ["GROK_MODEL"] = grok_model.strip()
+        if hasattr(server.config, "_cached_model"):
+            server.config._cached_model = None
+
+    if isinstance(gemini_model, str) and gemini_model.strip():
+        os.environ["GEMINI_MODEL"] = gemini_model.strip()
+
+
+_apply_persisted_provider_model_overrides()
+
+
+async def _reset_provider_router() -> None:
+    """Drop the lazy provider router so the next search sees new model config."""
+    from .providers import router as router_module
+
+    async with router_module._router_lock:
+        router_module._router = None
 
 
 # Preserve the existing single-query implementation as the canonical internal
@@ -21,6 +57,11 @@ _single_web_search = server.web_search
 # the historical scalar form and the newer list form without changing the
 # underlying single-query implementation.
 server.mcp.local_provider.remove_tool("web_search")
+
+# Replace the original Grok-only model switch with a provider-aware wrapper.
+# Keeping the same public tool name and model-first signature preserves old
+# clients that only send {"model": "..."}.
+server.mcp.local_provider.remove_tool("switch_model")
 
 
 async def _run_batch(
@@ -174,6 +215,142 @@ async def batch_web_search(
         model=model,
         extra_sources=extra_sources,
         mode=mode,
+    )
+
+
+@server.mcp.tool(
+    name="switch_model",
+    output_schema=None,
+    description="""
+    Switch and persist the model for a specific search provider.
+
+    Backward compatibility:
+    - Existing calls that provide only `model` still target Grok.
+    - Set `provider="gemini"` to change the Gemini secondary provider.
+
+    The selected model is checked against that provider's /models catalog when
+    available, saved in ~/.config/grok-search/config.json, applied immediately
+    to the current process, and used by newly created provider routers.
+    """,
+    meta={
+        "version": "2.0.0",
+        "author": "guda.studio",
+    },
+)
+async def switch_model(
+    model: Annotated[str, "Model ID to activate for the selected provider."],
+    provider: Annotated[
+        str,
+        "Target provider: 'grok' (default, backward compatible) or 'gemini'."
+    ] = "grok",
+) -> str:
+    target = (provider or "grok").strip().lower()
+    requested_model = (model or "").strip()
+
+    if target not in {"grok", "gemini"}:
+        return json.dumps(
+            {
+                "status": "❌ 失败",
+                "error": "unsupported_provider",
+                "message": "provider 必须是 grok 或 gemini",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    if not requested_model:
+        return json.dumps(
+            {
+                "status": "❌ 失败",
+                "error": "empty_model",
+                "message": "model 不能为空",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    if target == "grok":
+        provider_name = "Grok"
+        api_url = server.config.grok_api_url
+        api_key = server.config.grok_api_key
+        previous_model = server.config.grok_model
+    else:
+        provider_name = "Gemini"
+        api_url = server.config.gemini_api_url
+        api_key = server.config.gemini_api_key
+        previous_model = server.config.gemini_model
+        if not api_url or not api_key:
+            return json.dumps(
+                {
+                    "status": "❌ 失败",
+                    "provider": provider_name,
+                    "error": "provider_not_configured",
+                    "message": "Gemini provider 未配置 GEMINI_API_URL/GEMINI_API_KEY",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    available_models = await server._get_available_models_cached(api_url, api_key)
+    if available_models and requested_model not in available_models:
+        return json.dumps(
+            {
+                "status": "❌ 失败",
+                "provider": provider_name,
+                "error": "model_not_available",
+                "requested_model": requested_model,
+                "available_models": available_models,
+                "message": f"{requested_model} 不在 {provider_name} 当前模型列表中",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    config_data = server.config._load_config_file()
+    if not isinstance(config_data, dict):
+        config_data = {}
+
+    if target == "grok":
+        # Keep the legacy field for older versions while adding an explicit
+        # provider key used by the new startup override logic.
+        config_data["model"] = requested_model
+        config_data["GROK_MODEL"] = requested_model
+    else:
+        config_data["GEMINI_MODEL"] = requested_model
+
+    try:
+        server.config._save_config_file(config_data)
+    except ValueError as exc:
+        return json.dumps(
+            {
+                "status": "❌ 失败",
+                "provider": provider_name,
+                "error": "persist_failed",
+                "message": f"切换模型失败: {exc}",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    env_key = "GROK_MODEL" if target == "grok" else "GEMINI_MODEL"
+    os.environ[env_key] = requested_model
+    if target == "grok" and hasattr(server.config, "_cached_model"):
+        server.config._cached_model = None
+
+    await _reset_provider_router()
+
+    return json.dumps(
+        {
+            "status": "✅ 成功",
+            "provider": provider_name,
+            "previous_model": previous_model,
+            "current_model": requested_model,
+            "validation": "validated" if available_models else "catalog_unavailable_skipped",
+            "message": f"{provider_name} 模型已从 {previous_model} 切换到 {requested_model}",
+            "config_file": str(server.config.config_file),
+        },
+        ensure_ascii=False,
+        indent=2,
     )
 
 
