@@ -30,6 +30,27 @@ def get_last_search_timing() -> dict:
     return dict(_LAST_TIMING.get() or {})
 
 
+def _store_last_search_timing(provider_router_ms: float, providers_ms: dict[str, float]) -> None:
+    """Mutate the inherited timing bucket so child-task writes remain visible.
+
+    asyncio.create_task copies ContextVar bindings into the child task. Rebinding
+    a ContextVar in that child does not propagate back to the parent, but the
+    copied binding still references the same mutable dict created by
+    reset_last_search_timing(). Mutating that dict therefore preserves timing
+    across the server's single-flight task boundary without introducing global
+    per-request state.
+    """
+    bucket = _LAST_TIMING.get()
+    if bucket is None:
+        bucket = {}
+        _LAST_TIMING.set(bucket)
+    bucket.clear()
+    bucket.update({
+        "provider_router_ms": provider_router_ms,
+        "providers_ms": dict(providers_ms),
+    })
+
+
 def install_search_telemetry() -> None:
     """Install additive wrappers once without changing provider/router semantics."""
     global _INSTALLED
@@ -62,10 +83,7 @@ def install_search_telemetry() -> None:
             router_ms = _elapsed_ms(started)
             result.provider_timings_ms = providers_ms
             result.router_elapsed_ms = router_ms
-            _LAST_TIMING.set({
-                "provider_router_ms": router_ms,
-                "providers_ms": providers_ms,
-            })
+            _store_last_search_timing(router_ms, providers_ms)
             return result
         finally:
             _PROVIDER_TIMINGS.pop(request_id, None)
