@@ -35,6 +35,32 @@ async def test_router_wrapper_records_wall_clock_timing(monkeypatch):
     assert isinstance(timing["providers_ms"], dict)
 
 
+@pytest.mark.asyncio
+async def test_router_timing_survives_singleflight_style_child_task(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER_STRATEGY", "parallel")
+    router = ProviderRouter()
+    router._providers = [_FakeProvider("Grok", 0.001)]
+    router._initialized = True
+
+    async def fake_single_web_search(**kwargs):
+        await asyncio.create_task(router.run_search(kwargs["query"]))
+        return {
+            "session_id": "child-task",
+            "content": kwargs["query"],
+            "sources_count": 0,
+            "providers_used": ["Grok"],
+            "supplementary": "",
+        }
+
+    monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_web_search)
+    monkeypatch.setattr(entrypoint.server, "_RESULT_CACHE", _FakeCache())
+
+    result = await entrypoint._run_batch(["child context"])
+    timing = result["results"][0]["timing"]
+
+    assert timing["provider_router_ms"] > 0
+
+
 class _FakeCache:
     def __init__(self, cached=None):
         self.cached = cached

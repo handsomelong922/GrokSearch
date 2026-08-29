@@ -1,6 +1,9 @@
 """Compatibility facade for the batch-first runtime entrypoint."""
 
 from typing import Annotated
+from urllib.parse import urlsplit
+
+from fastmcp import Context
 
 from . import runtime_entrypoint as _runtime
 
@@ -19,6 +22,51 @@ _reset_provider_router = _runtime._reset_provider_router
 # Keep these names patchable for historical tests/clients that import the Python
 # module directly. The live MCP batch tool remains registered by runtime_entrypoint.
 _single_web_search = _runtime._single_web_search
+_base_web_fetch = server.web_fetch
+_DIRECT_FETCH_HOSTS = {"api.github.com", "raw.githubusercontent.com"}
+
+
+def _is_direct_fetch_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme.lower() == "https" and (parsed.hostname or "").lower() in _DIRECT_FETCH_HOSTS
+
+
+async def _call_direct_fetch(url: str) -> str | None:
+    """Fetch public GitHub API/raw text directly instead of via extract services.
+
+    The direct path is intentionally restricted to two public GitHub hosts. This
+    avoids routing machine-readable GitHub endpoints through Tavily/Firecrawl
+    while not turning web_fetch into an unrestricted server-side HTTP client.
+    """
+    if not _is_direct_fetch_url(url):
+        return None
+
+    host = (urlsplit(url).hostname or "").lower()
+    headers = {
+        "User-Agent": "grok-search-mcp",
+        "Accept": "application/vnd.github+json" if host == "api.github.com" else "text/plain, */*;q=0.8",
+    }
+    try:
+        client = await server._get_supplemental_client()
+        response = await client.get(
+            url,
+            headers=headers,
+            timeout=server._supplemental_request_timeout(20.0),
+            follow_redirects=True,
+        )
+    except Exception as exc:
+        return f"直接提取失败: {type(exc).__name__}"
+
+    if response.status_code >= 400:
+        detail = (response.text or "").strip().replace("\n", " ")[:500]
+        suffix = f" - {detail}" if detail else ""
+        return f"直接提取失败: HTTP {response.status_code}{suffix}"
+
+    text = response.text
+    return text if text and text.strip() else "直接提取失败: 响应内容为空"
 
 
 async def _run_batch(
@@ -80,6 +128,32 @@ async def batch_web_search(
 ) -> dict:
     """Python compatibility wrapper; MCP registration lives in runtime_entrypoint."""
     return await _run_batch(queries, platform, model, extra_sources, mode)
+
+
+# GitHub API and raw-content URLs are machine-readable endpoints. Fetch them
+# directly and keep the existing Tavily -> Firecrawl extraction path for normal
+# web pages. This replacement is additive and preserves the public tool name.
+try:
+    server.mcp.local_provider.remove_tool("web_fetch")
+except Exception:
+    pass
+
+
+@server.mcp.tool(
+    name="web_fetch",
+    output_schema=None,
+    description="Fetch complete URL content. GitHub API/raw URLs are retrieved directly; ordinary webpages keep the existing Tavily/Firecrawl extraction path.",
+    meta={"version": "1.4.0", "author": "guda.studio"},
+)
+async def web_fetch(
+    url: Annotated[str, "Complete HTTP/HTTPS URL to fetch."],
+    ctx: Context = None,
+) -> str:
+    if _is_direct_fetch_url(url):
+        direct = await _call_direct_fetch(url)
+        if direct is not None:
+            return direct
+    return await _base_web_fetch(url, ctx)
 
 
 if __name__ == "__main__":
