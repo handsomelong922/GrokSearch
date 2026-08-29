@@ -49,3 +49,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_VERSION=${{ github.run_number }}
+            DOCKER_TAG=${{ github.run_number }}
