@@ -109,7 +109,7 @@ def _add_web_mapping(engine: PlanningEngine, session_id: str, sub_query_id: str)
     )
 
 
-def test_execution_plan_uses_one_array_web_search_for_parallel_searches():
+def test_execution_plan_uses_one_batch_search_for_parallel_searches():
     engine = PlanningEngine()
     for sub_query_id in ("sq1", "sq2", "sq3"):
         _add_web_mapping(engine, "p1", sub_query_id)
@@ -125,9 +125,9 @@ def test_execution_plan_uses_one_array_web_search_for_parallel_searches():
         },
     )
 
-    assert result["parallel_search_tool"] == "web_search"
+    assert result["parallel_search_tool"] == "batch_web_search"
     assert "single MCP call" in result["parallel_search_instruction"]
-    assert "query array" in result["parallel_search_instruction"]
+    assert "batch_web_search" in result["parallel_search_instruction"]
 
 
 def test_execution_plan_does_not_batch_non_search_parallel_tools():
@@ -159,7 +159,7 @@ def test_execution_plan_does_not_batch_non_search_parallel_tools():
     assert "parallel_search_tool" not in result
 
 
-def test_level_two_independent_web_search_mappings_use_array_web_search():
+def test_level_two_independent_web_search_mappings_use_batch_search():
     engine = PlanningEngine()
     for sub_query in (
         {"id": "sq1", "goal": "first", "expected_output": "one", "boundary": "only first"},
@@ -185,8 +185,8 @@ def test_level_two_independent_web_search_mappings_use_array_web_search():
         ],
     )
 
-    assert planning_result["parallel_search_tool"] == "web_search"
-    assert "query array" in planning_result["parallel_search_instruction"]
+    assert planning_result["parallel_search_tool"] == "batch_web_search"
+    assert "batch_web_search" in planning_result["parallel_search_instruction"]
 
 
 def test_dependent_web_search_mappings_are_not_forced_into_one_array_call():
