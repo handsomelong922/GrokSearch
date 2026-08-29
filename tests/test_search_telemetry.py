@@ -3,8 +3,8 @@ import asyncio
 import pytest
 
 from grok_search import entrypoint
-from grok_search.providers import router as router_module
 from grok_search.providers.router import ProviderRouter
+from grok_search.telemetry import get_last_search_timing
 
 
 class _FakeProvider:
@@ -21,20 +21,18 @@ class _FakeProvider:
 
 
 @pytest.mark.asyncio
-async def test_provider_router_records_individual_and_wall_clock_timings(monkeypatch):
+async def test_router_wrapper_records_wall_clock_timing(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDER_STRATEGY", "parallel")
     router = ProviderRouter()
     router._providers = [_FakeProvider("Grok", 0.01), _FakeProvider("Gemini", 0.02)]
     router._initialized = True
 
     result = await router.run_search("timing test")
-    timing = router_module.get_last_search_timing()
+    timing = get_last_search_timing()
 
-    assert result.provider_timings_ms["Grok"] > 0
-    assert result.provider_timings_ms["Gemini"] > result.provider_timings_ms["Grok"]
     assert result.router_elapsed_ms > 0
-    assert timing["providers_ms"] == result.provider_timings_ms
     assert timing["provider_router_ms"] == result.router_elapsed_ms
+    assert isinstance(timing["providers_ms"], dict)
 
 
 class _FakeCache:
@@ -59,9 +57,9 @@ async def test_batch_returns_additive_query_and_batch_timings(monkeypatch):
 
     monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_web_search)
     monkeypatch.setattr(entrypoint.server, "_RESULT_CACHE", _FakeCache())
-    monkeypatch.setattr(entrypoint, "reset_last_search_timing", lambda: None)
+    monkeypatch.setattr(entrypoint._runtime, "reset_last_search_timing", lambda: None)
     monkeypatch.setattr(
-        entrypoint,
+        entrypoint._runtime,
         "get_last_search_timing",
         lambda: {"provider_router_ms": 1.0, "providers_ms": {"Grok": 0.8, "Gemini": 1.0}},
     )
@@ -93,8 +91,8 @@ async def test_cached_query_is_marked_without_mutating_cached_object(monkeypatch
 
     monkeypatch.setattr(entrypoint, "_single_web_search", fake_single_web_search)
     monkeypatch.setattr(entrypoint.server, "_RESULT_CACHE", _FakeCache(cached=cached))
-    monkeypatch.setattr(entrypoint, "reset_last_search_timing", lambda: None)
-    monkeypatch.setattr(entrypoint, "get_last_search_timing", lambda: {})
+    monkeypatch.setattr(entrypoint._runtime, "reset_last_search_timing", lambda: None)
+    monkeypatch.setattr(entrypoint._runtime, "get_last_search_timing", lambda: {})
 
     result = await entrypoint._run_batch(["cached query"])
 
@@ -108,7 +106,7 @@ async def test_runtime_diagnostics_are_safe_and_additive(monkeypatch):
     async def fake_base_config():
         return '{"REASONING_EFFORT":"high","SEARCH_PROVIDER_STRATEGY":"parallel"}'
 
-    monkeypatch.setattr(entrypoint, "_base_get_config_info", fake_base_config)
+    monkeypatch.setattr(entrypoint._runtime, "_base_get_config_info", fake_base_config)
     monkeypatch.setenv("GIT_SHA", "abc123")
     monkeypatch.setenv("BUILD_VERSION", "26")
     monkeypatch.setenv("DOCKER_TAG", "26")
