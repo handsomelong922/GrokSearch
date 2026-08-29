@@ -10,10 +10,11 @@ PLAN_SEARCH_DESCRIPTION = _runtime.PLAN_SEARCH_DESCRIPTION
 LEGACY_PLANNER_TOOL_NAMES = _runtime.LEGACY_PLANNER_TOOL_NAMES
 plan_search = _runtime.plan_search
 get_config_info = _runtime.get_config_info
-switch_model = _runtime.switch_model
 main = _runtime.main
 reset_last_search_timing = _runtime.reset_last_search_timing
 get_last_search_timing = _runtime.get_last_search_timing
+_apply_persisted_provider_model_overrides = _runtime._apply_persisted_provider_model_overrides
+_reset_provider_router = _runtime._reset_provider_router
 
 # Keep these names patchable for historical tests/clients that import the Python
 # module directly. The live MCP batch tool remains registered by runtime_entrypoint.
@@ -29,6 +30,12 @@ async def _run_batch(
 ) -> dict:
     _runtime._single_web_search = _single_web_search
     return await _runtime._run_batch(queries, platform, model, extra_sources, mode)
+
+
+async def switch_model(model: str, provider: str = "grok") -> str:
+    """Python compatibility wrapper around the registered runtime tool."""
+    _runtime._reset_provider_router = _reset_provider_router
+    return await _runtime.switch_model(model=model, provider=provider)
 
 
 # Replace only the compatibility web_search registration so historical scalar
