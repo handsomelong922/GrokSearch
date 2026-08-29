@@ -2,9 +2,9 @@
 
 > 最后更新：2026-08-29
 > 仓库：`handsomelong922/GrokSearch`
-> 当前代码基线 / Docker 构建提交：`1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92`
-> 最新成功 Docker：`ghcr.io/handsomelong922/groksearch:28`
-> 当前 live 部署：HF Space 最后已验证仍为 `:27`（`git_sha=a45321913c7c4f434bc9edb54952f4a193ce3daa`）；`:28` 尚待用户重新部署后做 live 验证。
+> 当前 GitHub `main`：`6130b99e923cec5bffe2d2b15d8695a1f62ad6b1`（handoff docs-only）
+> 当前功能代码 / Docker 构建提交：`1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92`（PR #18）
+> 当前已部署并 live 验证 Docker：`ghcr.io/handsomelong922/groksearch:28`
 
 ## 当前核心原则
 
@@ -12,112 +12,57 @@
 - `REASONING_EFFORT=high` 保持不变。
 - `SEARCH_PROVIDER_STRATEGY=parallel`；Grok + Gemini 仍按现有并行完整等待策略执行。
 - **本阶段明确不做 Grok-first + Gemini grace window。**
-- Tavily 按需增强；普通 batch 默认 `extra_sources=0`。
-- Firecrawl 当前未配置，不应无理由进入普通搜索关键路径。
+- Tavily 按需增强；普通 batch 应显式/默认使用 `extra_sources=0`。
+- Firecrawl 当前未配置，不应进入普通搜索关键路径。
 - 任何 MCP schema、Provider router、并发和核心接口修改必须优先保证向后兼容并先做回归验证。
+
+## 当前运行态：Docker :28 已 live 验证
+
+2026-08-29 用户完成 HF Space 切换后，`get_config_info` 实时返回：
+
+```text
+runtime.git_sha = 1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92
+runtime.build_version = 28
+runtime.docker_tag = 28
+runtime.telemetry_version = 1
+runtime.provider_strategy = parallel
+runtime.reasoning_effort = high
+```
+
+Provider / 配置：
+
+```text
+Grok = grok-chat-fast
+Gemini = gemini-3.7-flash
+SEARCH_PROVIDER_STRATEGY = parallel
+REASONING_EFFORT = high
+Tavily = configured
+Firecrawl = not configured
+```
+
+Grok / Gemini `/models` connectivity 均成功。
 
 ## PR #16：Planner 收敛 + Search/Runtime Telemetry
 
-PR #16 已 squash merge。
-
-主要变更：
-
-1. `batch_web_search` 成为普通 factual / recent / comparative / multi-query 搜索默认入口。
-2. 六个旧公开 Planner 工具退出默认 MCP schema：`plan_intent`、`plan_complexity`、`plan_sub_query`、`plan_search_term`、`plan_tool_mapping`、`plan_execution`。
-3. 旧 Planner Python 实现保留，降低兼容风险。
-4. 新增单一可选 `plan_search`；普通搜索不应先调用 Planner。
-5. Planner 中旧 `web_search` 映射规范为 `batch_web_search`。
-6. `batch_web_search` 增加 request-scoped timing telemetry。
-7. `get_config_info` 增加 safe runtime/build telemetry。
-8. Docker workflow 注入 build provenance。
-9. 新增 Pull Request pytest CI。
-
-PR #16 合并代码提交：
+PR #16 已 squash merge：
 
 ```text
 81ac200c798bad6f7b6c2e92c322183d15ca5b93
 ```
 
+主要变更：
+
+1. `batch_web_search` 成为普通 factual / recent / comparative / multi-query 搜索默认入口。
+2. 六个旧公开 Planner 工具退出目标默认 MCP schema：`plan_intent`、`plan_complexity`、`plan_sub_query`、`plan_search_term`、`plan_tool_mapping`、`plan_execution`。
+3. 旧 Planner Python 实现保留以降低兼容风险。
+4. 新增单一可选 `plan_search`；普通搜索不应先调用 Planner。
+5. Planner 内部搜索映射统一为 `batch_web_search`。
+6. `batch_web_search` 增加 request-scoped timing telemetry。
+7. `get_config_info` 增加 runtime/build provenance。
+8. Docker workflow 注入 build provenance。
+9. 增加 Pull Request pytest CI。
+
 ## PR #18：Telemetry SingleFlight 修复 + GitHub Direct Fetch
-
-### Live 复现
-
-HF Space `:27` 已确认运行新 telemetry 代码：
-
-```text
-runtime.git_sha = a45321913c7c4f434bc9edb54952f4a193ce3daa
-runtime.build_version = 27
-runtime.docker_tag = 27
-runtime.reasoning_effort = high
-runtime.provider_strategy = parallel
-```
-
-但真实一项 `batch_web_search(extra_sources=0)` 返回：
-
-```text
-timing.total_ms = 8498.48
-provider_router_ms = 0.0
-providers_ms = {}
-overhead_ms = 8498.48
-```
-
-搜索本身成功且 `providers_used=["Grok", "Gemini"]`，因此确认是 telemetry 数据传播失败，而不是 Provider 未执行。
-
-### 根因 1：ContextVar 在 SingleFlight child task 中重绑定后不会回传父 task
-
-`server.web_search` 通过 `_SearchSingleFlight.run()` 使用 `asyncio.create_task()` 执行真正搜索。
-
-父 batch task 先执行：
-
-```text
-reset_last_search_timing() -> ContextVar 绑定到一个空 dict
-```
-
-child task 中原实现随后执行：
-
-```text
-_LAST_TIMING.set({...})
-```
-
-`asyncio.create_task()` 会复制 Context，但 child 中重新绑定 ContextVar 不会传播回 parent，因此 batch wrapper 最终仍读到父 task 的空 dict。
-
-修复方式：不再在 child 中重新绑定 timing dict，而是**原地更新从 parent 继承的可变 dict**。这样不引入全局 request timing 状态，也不改变 Provider router 行为。
-
-### 根因 2：`web_fetch` 错把 GitHub API / Raw URL 送进 Tavily → Firecrawl 抽取链
-
-用户提供的 HF 后台日志显示：
-
-```text
-Begin Fetch: https://api.github.com/...
-Tavily unavailable or failed, trying Firecrawl...
-Fetch Failed!
-```
-
-当前 Firecrawl 未配置，因此 GitHub API endpoint 一旦 Tavily Extract 不适配/失败，fallback 必然继续失败。
-
-修复：
-
-- `https://api.github.com/...`
-- `https://raw.githubusercontent.com/...`
-
-这两个**精确 allowlist 公共 host**使用 direct HTTPS GET。
-
-普通网页仍保留原有 Tavily → Firecrawl 抽取路径。没有把 `web_fetch` 变成任意 URL 直连器，避免扩大 SSRF 风险面。
-
-GitHub direct fetch 若遇到 HTTP 4xx/5xx，会直接返回明确 HTTP 错误，不再无意义地进入 Tavily/Firecrawl fallback。
-
-### TDD / CI 验证
-
-先提交回归测试再改生产代码：
-
-- SingleFlight-style child task 应保留 `provider_router_ms`；
-- GitHub API direct fetch；
-- raw.githubusercontent.com direct fetch；
-- 非 allowlist host 不走 direct client；
-- GitHub direct fetch 成功时不调用原 Tavily/Firecrawl 路径；
-- 普通网页继续沿用原 `web_fetch` 路径。
-
-RED 阶段 CI 如预期失败；修复后 PR #18 新一轮 pytest CI 完整成功。
 
 PR #18 squash merge：
 
@@ -133,11 +78,125 @@ Build and push: success
 image: ghcr.io/handsomelong922/groksearch:28
 ```
 
-备注：最初 draft PR #17 因 GitHub connector 的 `mark ready for review` GraphQL schema 错误无法切换状态，因此关闭 #17，并以完全相同 head SHA 重建非 draft PR #18；这不是 GrokSearch 仓库代码故障。
+### 根因 1：SingleFlight child task 导致 telemetry ContextVar 丢失
+
+`:27` live 测试曾出现：
+
+```text
+timing.total_ms > 0
+provider_router_ms = 0.0
+providers_ms = {}
+providers_used = [Grok, Gemini]
+```
+
+`_SearchSingleFlight` 使用 `asyncio.create_task()` 执行真实搜索。ContextVar binding 会复制给 child task，但 child task 中重新 `_LAST_TIMING.set(...)` 不会回传 parent task。
+
+修复：对 parent task 已绑定并由 child 继承的可变 timing dict **原地更新**，不重新绑定 ContextVar；不改变 router、缓存 key、Provider 策略或 reasoning。
+
+### :28 live telemetry 验证：已解决
+
+单项 fresh batch：
+
+```text
+query_count = 1
+cache_hit = false
+total_ms = 3556.54
+provider_router_ms = 3555.73
+providers_ms.Grok = 1937.55
+providers_ms.Gemini = 3539.04
+overhead_ms = 0.81
+batch_timing.total_ms = 3556.83
+```
+
+结论：Provider timing 已成功跨 SingleFlight child task 返回父 batch wrapper；此前 `provider_router_ms=0 / providers_ms={}` 的 live bug 已解决。
+
+### Cache timing 验证：正常
+
+重复完全相同查询：
+
+```text
+cache_hit = true
+total_ms = 0.03
+provider_router_ms = 0.0
+providers_ms = {}
+overhead_ms = 0.03
+batch_timing.total_ms = 0.10
+```
+
+结论：缓存命中不会错误回放首次真实 Provider timing。
+
+### 多 query 服务端并发验证：正常
+
+3 个 fresh query：
+
+```text
+q1 total_ms = 4496.78
+q2 total_ms = 4480.05
+q3 total_ms = 4302.42
+batch_timing.total_ms = 4496.88
+```
+
+每项均：
+
+```text
+cache_hit = false
+provider_router_ms > 0
+providers_ms.Grok > 0
+providers_ms.Gemini > 0
+overhead_ms < 1 ms
+```
+
+结论：3 个 query 在 MCP 服务端并发执行，batch wall-clock 基本等于最慢子查询，而不是三项耗时相加。
+
+### 根因 2：GitHub API/raw URL 错误进入 Tavily → Firecrawl
+
+用户后台日志曾出现：
+
+```text
+Begin Fetch: https://api.github.com/...
+Tavily unavailable or failed, trying Firecrawl...
+Fetch Failed!
+```
+
+Firecrawl 当前未配置，因此 GitHub API / raw URL 一旦 Tavily Extract 不适配就必然继续失败。
+
+修复：以下两个精确 public host 直接 HTTPS GET：
+
+```text
+api.github.com
+raw.githubusercontent.com
+```
+
+普通网页仍保持原有 Tavily → Firecrawl extraction path；没有开放任意 URL 直连，避免扩大 SSRF 风险面。
+
+### :28 GitHub direct fetch live 验证：已解决
+
+实时调用：
+
+```text
+https://api.github.com/repos/handsomelong922/GrokSearch/branches/main
+```
+
+成功直接返回 GitHub branch JSON，并确认：
+
+```text
+main = 6130b99e923cec5bffe2d2b15d8695a1f62ad6b1
+parent = 1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92
+```
+
+实时调用：
+
+```text
+https://raw.githubusercontent.com/handsomelong922/GrokSearch/main/src/grok_search/telemetry.py
+```
+
+成功直接返回完整 `telemetry.py` 源码。
+
+结论：此前 GitHub API/raw → Tavily → Firecrawl → Failed 的功能性故障已解决。
 
 ## Telemetry 当前字段
 
-每个 batch query 结果：
+每个 batch query：
 
 ```text
 timing.total_ms
@@ -156,170 +215,120 @@ batch_timing.total_ms
 batch_timing.query_count
 ```
 
-设计原则：
+当前 live 数据说明 Provider/router telemetry 本身开销很低；本次 fresh 测试 overhead 约 0.3–0.8 ms。
 
-- 使用 `time.perf_counter()`；无外部 telemetry 依赖。
-- 不改变 Provider 选择和搜索语义。
-- `overhead_ms = total_ms - provider_router_ms`。
-- 当前 overhead 聚合 cache check、可选 supplemental search、source merge 和 response construction。
-- 暂不侵入 Tavily / post-processing 每个细分阶段；只有 live 数据显示 overhead 明显偏高时再拆分。
+## 当前唯一主要未完成问题：ChatGPT MCP tool schema 仍旧
 
-## Runtime/build diagnostics
+**后端 runtime 已确认是 :28，但本次 ChatGPT 会话加载到的 MCP schema 仍明显是旧版。**
 
-`get_config_info.runtime` 应包含：
+当前 ChatGPT 侧仍看到：
 
-```text
-package_version
-python_version
-git_sha
-build_version
-docker_tag
-provider_strategy
-reasoning_effort
-telemetry_version
-timeouts_seconds
-```
+- 六个旧 Planner：`plan_intent / plan_complexity / plan_sub_query / plan_search_term / plan_tool_mapping / plan_execution`；
+- 没有目标新公开 `plan_search`；
+- `batch_web_search` description 仍写“two or more independent searches”；
+- `batch_web_search.extra_sources` schema 默认值仍显示 `3`；
+- `switch_model` 仍只显示单个 `model` 参数，没有目标 `provider` 参数；
+- `web_fetch` description 仍是旧版通用描述，没有显示 GitHub API/raw direct-fetch 说明。
 
-Docker `:28` 构建目标 provenance：
+与此同时，live runtime 和行为已经证明 :28 代码实际生效。因此当前剩余问题应视为 **MCP Host / ChatGPT 连接侧 schema 缓存或工具注册刷新问题**，而不是 HF Space 仍运行旧镜像。
 
-```text
-GIT_SHA=1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92
-BUILD_VERSION=28
-DOCKER_TAG=28
-```
+### 下一步先处理 schema refresh，不要继续改后端搜索逻辑
 
-## 当前尚未完成 / 已知问题
+建议顺序：
 
-### 1. HF Space 需要切换到 :28
+1. ChatGPT 中完全断开 GrokSearch MCP / App connection；
+2. 重新连接；
+3. 如果仍旧，disable → enable；
+4. 最稳妥：在同一 Project 新开一个新对话重新加载 MCP tools；
+5. 再检查工具 schema。
 
-生产运行态不能仅凭 GitHub/GHCR 推断。下一步部署：
+目标 schema：
 
 ```text
-ghcr.io/handsomelong922/groksearch:28
+batch_web_search   # batch-first，单项也可，extra_sources 默认 0
+plan_search        # 单一可选 Planner
+get_sources
+web_fetch          # GitHub API/raw direct fetch + normal-page existing path
+web_map
+get_config_info
+switch_model       # provider-aware
 ```
 
-### 2. 部署后必须重新做 live telemetry 验证
+六个旧 `plan_*` 不应再默认公开。
 
-期望普通非缓存 batch 搜索满足：
+## 其他已知边界
+
+### Tavily + Firecrawl supplemental allocation
+
+Firecrawl 当前未配置；普通 batch 使用 `extra_sources=0`，所以不是 hot path。未来同时启用时再单独设计预算分配。
+
+### switch_model hosted persistence
+
+运行时切换会写配置并同步当前进程，但 HF 容器完整 rebuild 后文件系统覆盖可能重置。长期固定模型仍以 HF 环境变量 / Secret 或持久化存储更稳妥；重新部署后以 `get_config_info` 为准。
+
+### Grok-first + Gemini grace window
+
+**仍明确暂不做。**
+
+当前 :28 telemetry 已可真实观察 Grok/Gemini latency。先收集实际业务查询数据，再决定是否值得单独设计 grace-window PR。
+
+本次示例数据中：
 
 ```text
-provider_router_ms > 0
-providers_ms.Grok > 0
-providers_ms.Gemini > 0
+单项：Grok 1937.55 ms / Gemini 3539.04 ms
+多项 q1：Grok 4495.58 ms / Gemini 4372.13 ms
+多项 q2：Grok 1769.89 ms / Gemini 4477.39 ms
+多项 q3：Grok 4298.83 ms / Gemini 4294.04 ms
 ```
 
-如果某 Provider 本次真正失败/未执行，其 provider timing 应结合 `providers_used` / errors 判断，不能机械要求两个字段始终存在。
-
-### 3. MCP schema 需要刷新确认
-
-当前 ChatGPT 会话此前仍看到旧的 `batch_web_search` description/default schema，尽管 runtime 已是 `:27`。这很可能是 MCP host schema 缓存。
-
-部署 `:28` 后：
-
-- disable → enable / 断开重连 GrokSearch MCP；
-- 必要时新开 Project 对话；
-- 确认 `batch_web_search` description 明确 batch-first，默认 `extra_sources=0`；
-- 确认 `plan_search` 存在，六个旧 `plan_*` 不再默认公开；
-- 确认 `web_fetch` 新 description 已出现；
-- 确认 `switch_model` provider-aware schema 仍存在。
-
-### 4. GitHub direct fetch 需要 live 验证
-
-部署 `:28` 后分别测试：
-
-```text
-https://api.github.com/repos/handsomelong922/GrokSearch/branches/main
-https://raw.githubusercontent.com/handsomelong922/GrokSearch/main/src/grok_search/telemetry.py
-```
-
-后台日志不应再出现这两个 host 的：
-
-```text
-Tavily unavailable or failed, trying Firecrawl...
-Fetch Failed!
-```
-
-普通网页仍允许使用 Tavily / Firecrawl extract。
-
-### 5. Tavily + Firecrawl supplemental allocation
-
-Firecrawl 当前未配置；普通 batch 默认 `extra_sources=0`，所以不是 hot path。未来同时启用时再单独处理预算分配。
-
-### 6. switch_model hosted persistence
-
-运行时切换会写配置并同步当前进程，但 HF 容器完整 rebuild 后文件系统覆盖可能被重置。长期固定模型仍以 HF 环境变量 / Secret 或持久化存储更稳妥。每次重新部署后以 `get_config_info` 为准。
+说明 Gemini 有时明显更慢，但不是每次都更慢；暂不足以据此立即改 router 策略。
 
 ## 下一步标准操作
 
-### 第一步：HF Space 切到 Docker :28
+### P0：刷新 ChatGPT MCP schema
+
+这是当前唯一最优先事项。后端 :28 已验证，无需再次修改 telemetry / GitHub fetch。
+
+### P1：刷新后重新核对工具 schema
+
+重点确认：
 
 ```text
-ghcr.io/handsomelong922/groksearch:28
+plan_search exists
+legacy six plan_* hidden
+batch_web_search extra_sources default = 0
+batch_web_search description = batch-first / one-item supported
+switch_model(provider, model)
+web_fetch new description
 ```
 
-完成 rebuild / restart。
+### P2：继续收集真实业务查询 telemetry
 
-### 第二步：刷新 ChatGPT MCP schema
-
-断开/重新连接 GrokSearch MCP，或 disable → enable；必要时新开一个本 Project 对话。
-
-### 第三步：运行 `get_config_info`
-
-期望：
+记录：
 
 ```text
-runtime.git_sha = 1aaa63e6174d5c2b2cb35edade8ad6bd2527fc92
-runtime.build_version = 28
-runtime.docker_tag = 28
-runtime.reasoning_effort = high
-runtime.provider_strategy = parallel
+providers_ms.Grok
+providers_ms.Gemini
+provider_router_ms
+overhead_ms
+total_ms
 ```
 
-### 第四步：live timing 测试
-
-一项：
-
-```text
-batch_web_search(
-  queries=["one normal current query"],
-  extra_sources=0
-)
-```
-
-多项：
-
-```text
-batch_web_search(
-  queries=["q1", "q2", "q3"],
-  extra_sources=0
-)
-```
-
-重点检查：
-
-- `provider_router_ms` 不再为 0；
-- `providers_ms` 能看到实际 Provider latency；
-- `batch_timing.total_ms` 与最长单项耗时关系合理；
-- 多项仍由服务器并发；
-- 默认无 Tavily supplemental latency。
-
-### 第五步：live GitHub Fetch 测试
-
-调用 `web_fetch` 读取 GitHub API/raw URL，确认 direct path 工作，且后台不再出现 Tavily → Firecrawl 的错误 fallback。
+暂时不要做 Grok-first + Gemini grace window。
 
 ## 新对话标准恢复顺序
 
 1. 先读本文件。
 2. 核对 GitHub `main`，不要只依赖旧聊天。
 3. 涉及实际部署时调用 `get_config_info`。
-4. 刚重新部署时先确认 MCP schema 已刷新。
+4. 刚重新部署时先确认 MCP schema 是否刷新。
 5. ChatGPT 搜索优先 `batch_web_search`。
 6. `REASONING_EFFORT` 保持 `high`。
-7. Tavily 按需，普通 batch 默认 `extra_sources=0`。
+7. Tavily 按需，普通 batch 使用 `extra_sources=0`。
 8. 核心接口/router/并发修改先做回归测试。
 9. merge 后检查 Docker workflow。
 10. HF 重部署后再做 live MCP 验证。
 
 ## 一句话当前状态
 
-Planner 收敛和 telemetry 基础设施已完成；live `:27` 暴露的 SingleFlight telemetry ContextVar 丢失问题，以及用户后台日志暴露的 GitHub API/raw `web_fetch` 错误 fallback 问题，均已通过 PR #18 修复、pytest CI 验证并构建为 Docker `:28`。**现在关键下一步是把 HF Space 切换到 `ghcr.io/handsomelong922/groksearch:28`，刷新 MCP schema，然后 live 验证 timing 和 GitHub direct fetch；仍然不要先做 Grok-first + Gemini grace window。**
+**Docker :28 已在 HF Space live 生效并完成验收：SingleFlight telemetry timing 已恢复，缓存 timing 正确，3-query 服务端并发正常，GitHub API/raw direct fetch 正常。当前唯一主要未完成问题是 ChatGPT 侧仍加载旧 MCP tool schema；下一步只需刷新/重连 MCP schema，不要再改后端搜索逻辑，也不要先做 Grok-first + Gemini grace window。**
